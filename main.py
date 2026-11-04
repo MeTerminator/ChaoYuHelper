@@ -47,6 +47,7 @@ def main():
     app.on_startup(lambda: print(f"课程助手已启动：http://{args.host}:{args.port}", flush=True))
     ui.run(
         title="课程助手",
+        dark=None,
         favicon="🎓",
         host=args.host,
         port=args.port,

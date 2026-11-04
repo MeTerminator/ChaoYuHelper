@@ -156,6 +156,7 @@ class Dashboard:
 
     def build(self, render=True):
         ui.colors(primary="#317868", secondary="#748a85", positive="#317868")
+        ui.dark_mode(value=None)
         ui.add_css((__import__("pathlib").Path(__file__).parent / "static/style.css").read_text())
         im_version = sha256((Path(__file__).parent / "static/im.js").read_bytes()).hexdigest()[:12]
         ui.add_head_html(f'<script src="/assets/im.js?v={im_version}"></script>')
@@ -195,7 +196,7 @@ class Dashboard:
             csrf = escape(self.client.request.cookies.get(CSRF_COOKIE, ""), quote=True)
             ui.html(
                 f'<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{csrf}">'
-                '<button type="submit" style="color:#317868;cursor:pointer">退出登录</button></form>',
+                '<button type="submit" style="color:var(--accent);cursor:pointer">退出登录</button></form>',
                 sanitize=False,
             )
             ui.select(PLATFORMS, value=self.platform, on_change=lambda e: self.change_platform(e.value)).props(
@@ -390,7 +391,6 @@ class Dashboard:
             if self.query.lower() in (c["name"] + c.get("teacher", "")).lower()
             and (not self.only_ongoing or self.platform == "chaoxing" or c.get("ongoing"))
         ]
-        colors = [("#e6f1ec", "#317868"), ("#e9eef9", "#526da7"), ("#f6eee5", "#aa8052"), ("#eeeaf5", "#8a72a5")]
         with self.course_grid:
             if not courses:
                 with ui.column().classes("col-span-full w-full"):
@@ -403,12 +403,10 @@ class Dashboard:
                         ("添加账号", self.login_dialog) if not self.account_id else None,
                     )
             for index, course in enumerate(courses):
-                bg, fg = colors[index % len(colors)]
                 with ui.column().classes("course-card gap-0"):
                     with (
                         ui.row()
-                        .classes("course-art w-full items-center justify-between")
-                        .style(f"background:{bg};color:{fg}")
+                        .classes(f"course-art course-art-{index % 4} w-full items-center justify-between")
                     ):
                         ui.icon(["menu_book", "architecture", "science", "language"][index % 4], size="32px")
                         ui.label("正在上课" if course.get("ongoing") else PLATFORMS[self.platform]).classes("pill")

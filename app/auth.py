@@ -223,7 +223,18 @@ def create_auth_router(auth):
         response = HTMLResponse(
             f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} · 课程助手</title>
-<style>body{{margin:0;background:#f3f6f5;color:#203d35;font:16px system-ui}}main{{box-sizing:border-box;max-width:440px;margin:8vh auto;padding:32px;background:white;border-radius:18px;box-shadow:0 8px 40px #203d3510}}h1{{font-size:26px}}p{{line-height:1.6}}label{{display:block;margin:20px 0}}input{{box-sizing:border-box;width:100%;padding:12px;margin-top:8px;border:1px solid #bccfc8;border-radius:8px;font:inherit}}button{{width:100%;background:#317868;color:white;border:0;border-radius:8px;padding:13px;font:inherit;cursor:pointer}}a{{display:inline-block;margin-top:20px;color:#317868}}.error{{color:#a22}}@media(max-width:480px){{main{{margin:24px 16px;padding:24px}}}}</style></head>
+<style>
+:root{{color-scheme:light;--bg:#f3f6f5;--card:#fff;--text:#203d35;--line:#bccfc8;--link:#317868;--error:#a22}}
+@media(prefers-color-scheme:dark){{:root{{color-scheme:dark;--bg:#101816;--card:#1a2521;--text:#e1e9e6;--line:#465c51;--link:#91d0b6;--error:#f2a4a4}}}}
+body{{margin:0;background:var(--bg);color:var(--text);font:16px system-ui}}
+main{{box-sizing:border-box;max-width:440px;margin:8vh auto;padding:32px;background:var(--card);border-radius:18px;box-shadow:0 8px 40px #203d3510}}
+h1{{font-size:26px}}p{{line-height:1.6}}label{{display:block;margin:20px 0}}
+input{{box-sizing:border-box;width:100%;padding:12px;margin-top:8px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--bg);color:var(--text)}}
+input:focus-visible{{outline:2px solid var(--link);outline-offset:2px}}
+button{{width:100%;background:#317868;color:white;border:0;border-radius:8px;padding:13px;font:inherit;cursor:pointer}}
+a{{display:inline-block;margin-top:20px;color:var(--link)}}.error{{color:var(--error)}}
+@media(max-width:480px){{main{{margin:24px 16px;padding:24px}}}}
+</style></head>
 <body><main><h1>{title}</h1><p>{note}</p><p class="error" role="alert">{escape(error)}</p>
 <form method="post" action="/admin/{mode}"><input type="hidden" name="csrf" value="{csrf}">{fields}<button>{action}</button></form>{back}</main></body></html>''',
             status_code=400 if error else 200,
