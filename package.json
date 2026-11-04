@@ -1,0 +1,1 @@
+{"name":"course-helper","private":true,"scripts":{"build:im":"esbuild app/static/im-source.js --bundle --minify --outfile=app/static/im.js --legal-comments=eof"},"dependencies":{"easemob-websdk":"4.24.0"},"devDependencies":{"esbuild":"^0.25.0"}}
