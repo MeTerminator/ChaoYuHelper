@@ -4,8 +4,10 @@ import asyncio
 import json
 import time
 from datetime import datetime
+from hashlib import sha256
 from html import escape
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from nicegui import app, background_tasks, ui
@@ -22,6 +24,20 @@ from .activity import (
 from .auth import CSRF_COOKIE
 from .homework_content import clean_homework_html
 from .homework_media import homework_images
+from .im import (
+    attachment_info,
+    control_update,
+    media_url,
+    merge_messages,
+    message_preview,
+    message_session,
+    message_time,
+    receipt_label,
+    session_key,
+    system_notice,
+    time_label,
+    visible_message,
+)
 from .media import image_extension
 from .providers.base import ProviderError
 from .providers.chaoxing import text
@@ -102,7 +118,20 @@ class Dashboard:
         self.live_generation = 0
         self.live = {}
         self.busy = False
-        self.im_messages = []
+        self.im_groups = {}
+        self.im_history = {}
+        self.im_unread = {}
+        self.im_selected = None
+        self.im_query = ""
+        self.im_status = "未连接"
+        self.im_request = 0
+        self.im_receipts = {}
+        self.im_profiles = {}
+        self.im_pages = {}
+        self.im_drafts = {}
+        self.im_user_id = ""
+        self.im_filter = "all"
+        self.im_sending = False
         self.captcha_lock = asyncio.Lock()
         self.pick_timers = []
         self.client = ui.context.client
@@ -128,10 +157,14 @@ class Dashboard:
     def build(self, render=True):
         ui.colors(primary="#317868", secondary="#748a85", positive="#317868")
         ui.add_css((__import__("pathlib").Path(__file__).parent / "static/style.css").read_text())
-        ui.add_head_html('<script src="/assets/im.js"></script>')
+        im_version = sha256((Path(__file__).parent / "static/im.js").read_bytes()).hexdigest()[:12]
+        ui.add_head_html(f'<script src="/assets/im.js?v={im_version}"></script>')
         self.client.on_disconnect(self.stop_live)
-        ui.on("course-im-message", lambda e: self.handle_im(e.args))
-        ui.on("course-im-status", lambda e: ui.notify(str(e.args.get("status", "状态更新"))))
+        async def incoming_im(event):
+            await self.handle_im(event.args)
+        ui.on("course-im-message", incoming_im)
+        ui.on("course-im-control", lambda e: self.apply_im_control(e.args))
+        ui.on("course-im-status", lambda e: self.handle_im_status(e.args))
         self.nav_buttons = {}
         with (
             ui.left_drawer(value=None, top_corner=True, bottom_corner=True)
@@ -230,6 +263,17 @@ class Dashboard:
 
     async def change_account(self, value):
         self.stop_live()
+        self.im_request += 1
+        self.im_groups.clear()
+        self.im_receipts.clear()
+        self.im_profiles.clear()
+        self.im_pages.clear()
+        self.im_drafts.clear()
+        self.im_user_id = ""
+        self.im_history.clear()
+        self.im_unread.clear()
+        self.im_selected = None
+        self.im_status = "未连接"
         self.account_id, self.course, self.section = value or "", None, "courses"
         app.storage.user["account_id"] = self.account_id
         await ui.run_javascript("window.courseIM?.close()")
@@ -2091,129 +2135,572 @@ class Dashboard:
         dialog.open()
 
     def render_groups(self):
-        self.heading("MESSAGES & GROUPS", "群聊与消息", "连接学习通即时消息，查看已加入群聊与群聊签到。")
         if self.platform != "chaoxing" or not self.account_id:
             self.empty("forum", "请选择学习通账号", "群聊功能使用学习通的环信即时通讯服务。")
             return
-        with ui.row():
-            primary("连接消息服务", lambda: guarded(self.connect_im), "sensors")
-            ui.button("刷新群聊", icon="refresh", on_click=lambda: guarded(self.load_groups)).props("outline")
-            ui.button(
-                "启用桌面通知",
-                icon="notifications",
-                on_click=lambda: ui.run_javascript("Notification.requestPermission()"),
-            ).props("flat")
-        ui.label("环信 Web 接入受平台设备策略限制；连接状态会直接显示，群聊签到也可通过活动 ID 打开。").classes(
-            "muted text-xs"
-        )
-        with ui.row().classes("panel w-full items-center"):
+        self.im_request += 1
+        for row in service.store.all("im-messages").values():
+            if row["account_id"] == self.account_id:
+                message = row["message"]
+                if not visible_message(message):
+                    self.apply_im_control(message, render=False)
+                    continue
+                gid = row.get("session") or message_session(message, self.im_self_id())
+                if gid:
+                    self.im_history[gid] = merge_messages(self.im_history.get(gid, []), [message])
+        for row in service.store.all("im-conversations").values():
+            if row.get("account_id") == self.account_id:
+                conversation = dict(row["conversation"])
+                if not visible_message(conversation.get("lastMessage") or {}):
+                    conversation.pop("lastMessage", None)
+                if (conversation.get("chatType") == "singleChat" and conversation.get("id") == self.im_self_id()
+                        and not self.im_history.get(row["key"]) and not conversation.get("lastMessage")):
+                    continue
+                self.im_groups.setdefault(row["key"], conversation)
+        with ui.row().classes("w-full items-center justify-between gap-3"):
+            with ui.row().classes("items-center gap-3"):
+                ui.label("消息").classes("page-title")
+                self.im_status_label = ui.label(self.im_status).classes("im-status")
+            with ui.row().classes("items-center gap-2"):
+                primary("连接消息服务", lambda: guarded(self.connect_im), "sensors")
+                ui.button("刷新会话", icon="refresh", on_click=lambda: guarded(self.load_groups)).props("flat")
+                ui.button("发起私聊", icon="person_add_alt", on_click=self.im_private_dialog).props("flat")
+                with ui.button(icon="more_horiz").props('flat round aria-label="消息选项"'):
+                    with ui.menu():
+                        ui.menu_item("断开消息服务", on_click=self.disconnect_im)
+                        ui.menu_item("启用桌面通知", on_click=lambda: ui.run_javascript("Notification.requestPermission()"))
+                        ui.menu_item("通过活动 ID 打开签到", on_click=self.im_activity_dialog)
+        with ui.element("div").classes("im-workspace"):
+            with ui.column().classes("im-sidebar"):
+                with ui.column().classes("im-list-heading"):
+                    ui.label("会话").classes("text-base font-semibold")
+                    ui.input(placeholder="搜索会话", value=self.im_query,
+                             on_change=lambda e: self.filter_im_groups(e.value)).props(
+                        'outlined dense clearable aria-label="搜索会话"'
+                    ).classes("w-full im-search").add_slot("prepend", '<q-icon name="search" />')
+                    ui.toggle({"all": "全部", "groupChat": "群聊", "singleChat": "私聊"}, value=self.im_filter,
+                              on_change=lambda e: self.filter_im_type(e.value)).props("flat dense no-caps").classes("w-full")
+                self.group_region = ui.column().classes("im-conversations")
+            with ui.column().classes("im-chat"):
+                self.im_chat_header = ui.row().classes("im-chat-header")
+                self.im_scroll = ui.scroll_area().classes("im-chat-scroll")
+                with self.im_scroll:
+                    self.message_region = ui.column().classes("im-messages")
+                self.im_composer = ui.column().classes("im-composer")
+        self.render_im_groups()
+        self.render_im_chat()
+        self.render_im_composer()
+
+    def im_self_id(self):
+        return self.im_user_id or str(self.provider().account.get("imAccount", {}).get("userName") or "")
+
+    def im_private_dialog(self):
+        with ui.dialog() as dialog, ui.card().classes("w-96 p-6 gap-4"):
+            ui.label("发起私聊").classes("section-title")
+            user_id = field("对方 IM 用户 ID")
+            ui.label("也可以点击消息中的用户昵称发起私聊。打开会话不会发送消息。").classes("muted text-xs")
+            async def open_private():
+                uid = (user_id.value or "").strip()
+                if not uid or len(uid) > 128 or not all(c.isalnum() or c in "_.@-" for c in uid):
+                    raise ProviderError("请填写有效的 IM 用户 ID")
+                await self.start_im_private(uid)
+                dialog.close()
+            with ui.row().classes("w-full justify-end"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                primary("打开会话", lambda: guarded(open_private), "chat")
+        dialog.open()
+
+    async def start_im_private(self, user_id):
+        account_id = self.account_id
+        profiles = await self.provider().im_profiles(users=[user_id])
+        if account_id != self.account_id or self.section != "groups":
+            return
+        key = session_key("singleChat", user_id)
+        self.im_profiles.update(profiles)
+        self.im_groups.setdefault(key, {"id": user_id, "chatType": "singleChat"})
+        self.im_groups[key].update(profiles.get(key, {}))
+        self.save_im_conversations()
+        self.im_filter = "all"
+        # Rebuild filter controls as well as the list.
+        self.render_groups()
+        await self.group_history(key)
+
+    def render_im_composer(self):
+        self.im_composer.clear()
+        with self.im_composer:
+            if not self.im_selected:
+                ui.label("选择会话后可发送消息").classes("muted text-sm")
+                return
+            key, account_id = self.im_selected, self.account_id
+            draft_key = f"{account_id}:{key}"
+            value = self.im_drafts.get(key, service.store.get("im-drafts", draft_key, ""))
+            def draft_changed(event):
+                if account_id == self.account_id:
+                    self.im_drafts[key] = event.value or ""
+                    service.store.put("im-drafts", draft_key, event.value or "")
+            self.im_input = ui.textarea(placeholder="输入消息…", value=value, on_change=draft_changed).props(
+                'outlined autogrow rows=2 maxlength=5000 aria-label="消息输入框"'
+            ).classes("w-full im-textarea")
+            self.im_input.on("keydown.ctrl.enter.prevent", lambda: guarded(self.send_im_text))
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label("Ctrl + Enter 发送 · 最多 5000 字节").classes("muted text-xs")
+                ui.space()
+                if self.im_groups.get(key, {}).get("chatType") == "groupChat":
+                    ui.button("活动 ID", on_click=self.im_activity_dialog).props("flat dense")
+                self.im_send_button = primary("发送", lambda: guarded(self.send_im_text), "send")
+                if self.im_sending:
+                    self.im_send_button.disable()
+
+    async def send_im_text(self):
+        if self.im_sending or not self.im_selected:
+            return
+        key, account_id = self.im_selected, self.account_id
+        content = self.im_input.value or ""
+        if not content.strip():
+            raise ProviderError("消息不能为空")
+        if len(content.encode("utf-8")) > 5000:
+            raise ProviderError("消息不能超过 5000 字节")
+        conversation = self.im_groups[key]
+        args = json.dumps({"accountId": account_id, "targetId": conversation["id"],
+                           "chatType": conversation["chatType"], "text": content})
+        self.im_sending = True
+        self.im_send_button.disable()
+        try:
+            try:
+                result = await ui.run_javascript(f"return await window.courseIM.sendText({args})", timeout=60)
+            except Exception as exc:
+                raise ProviderError("发送结果未确认，请查看会话后再决定是否重发；草稿已保留。") from exc
+            if account_id != self.account_id:
+                return
+            if result.get("error"):
+                raise ProviderError(result["error"] + "；草稿已保留，请确认会话后再决定是否重发。")
+            if self.im_drafts.get(key, content) == content:
+                self.im_drafts[key] = ""
+                service.store.put("im-drafts", f"{account_id}:{key}", "")
+            self.cache_im_message(result["data"])
+            if self.section == "groups":
+                self.render_im_groups()
+                if self.im_selected == key:
+                    if self.im_input.value == content:
+                        self.im_input.set_value("")
+                    self.render_im_chat()
+        finally:
+            self.im_sending = False
+            if self.section == "groups" and hasattr(self, "im_send_button"):
+                self.im_send_button.enable()
+
+    def save_im_conversations(self):
+        for key, conversation in self.im_groups.items():
+            service.store.put("im-conversations", f"{self.account_id}:{key}",
+                              {"account_id": self.account_id, "key": key, "conversation": conversation})
+
+
+    def im_activity_dialog(self):
+        with ui.dialog() as dialog, ui.card().classes("w-96 p-6 gap-4"):
+            ui.label("打开群聊签到").classes("section-title")
             active_id = field("群聊签到活动 ID")
 
             async def direct():
                 if not (active_id.value or "").isdigit():
                     raise ProviderError("请填写有效活动 ID")
-                await self.sign_dialog(
-                    {"courseId": "", "classId": ""},
-                    {"id": active_id.value, "type": 2, "name": "群聊签到", "signType": "0"},
-                    group=True,
-                )
+                await self.sign_dialog({"courseId": "", "classId": ""}, {"id": active_id.value, "type": 2, "name": "群聊签到", "signType": "0"}, group=True)
+                dialog.close()
 
-            primary("打开签到", lambda: guarded(direct), "open_in_new")
-        self.group_region = ui.column().classes("w-full gap-3")
-        self.message_region = ui.column().classes("w-full gap-3")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                primary("打开签到", lambda: guarded(direct), "open_in_new")
+        dialog.open()
+
+    def handle_im_status(self, event):
+        self.im_status = str(event.get("status", "未连接"))
+        if self.section == "groups" and hasattr(self, "im_status_label"):
+            self.im_status_label.set_text(self.im_status)
+        if "错误" in self.im_status:
+            ui.notify(self.im_status, type="negative")
+
+    async def disconnect_im(self):
+        await ui.run_javascript("window.courseIM.close()")
+        self.handle_im_status({"status": "未连接"})
 
     async def connect_im(self):
-        account = self.provider().account
-        im = account.get("imAccount") or {}
-        if not im.get("userName") or not im.get("password"):
-            raise ProviderError("缺少 IM 会话，请刷新账号资料或重新登录")
-        args = json.dumps({**im, "accountId": self.account_id})
+        account_id = self.account_id
+        im = await self.provider().im_session()
+        if account_id != self.account_id or self.section != "groups":
+            return
+        self.im_user_id = im["userName"]
+        args = json.dumps({**im, "accountId": account_id})
         result = await ui.run_javascript(f"return await window.courseIM.connect({args})", timeout=40)
+        if account_id != self.account_id or self.section != "groups":
+            return
         if result.get("error"):
             raise ProviderError(result["error"])
-        ui.notify("消息服务已连接", type="positive")
+        self.handle_im_status({"status": "消息服务已连接"})
         await self.load_groups()
 
     async def load_groups(self):
-        result = await ui.run_javascript("return await window.courseIM.groups()", timeout=40)
-        if result.get("error"):
-            raise ProviderError(result["error"])
-        self.group_region.clear()
-        with self.group_region:
-            for group in result.get("data", []):
-                gid = str(group.get("groupid") or group.get("id"))
-                with ui.row().classes("activity-row"):
-                    ui.icon("groups", size="24px").classes("text-teal-700")
-                    ui.label(group.get("groupname") or group.get("name") or gid).classes("grow")
-                    ui.button("签到消息", on_click=lambda g=gid: guarded(lambda: self.group_history(g))).props(
-                        "outline"
-                    )
+        account_id = self.account_id
+        result, joined = await ui.run_javascript(
+            "return await Promise.all([window.courseIM.conversations(),window.courseIM.groups()])", timeout=60)
+        if account_id != self.account_id or self.section != "groups":
+            return
+        warnings = [r["error"] for r in (result, joined) if r.get("error")]
+        if warnings:
+            ui.notify("部分会话未能同步，保留可用及本地会话：" + "；".join(warnings), type="warning")
+        for group in joined.get("data", []):
+            gid = str(group.get("groupId") or group.get("groupid") or group.get("id") or "")
+            if gid:
+                key = session_key("groupChat", gid)
+                self.im_groups.setdefault(key, {"id": gid, "chatType": "groupChat"})
+                self.im_groups[key]["name"] = group.get("groupName") or group.get("groupname") or gid
+        for item in result.get("data", []):
+            target, kind = str(item.get("conversationId") or ""), item.get("conversationType")
+            key = session_key(kind, target)
+            if not key:
+                continue
+            latest = item.get("lastMessage")
+            if (kind == "singleChat" and target == self.im_self_id() and latest and not visible_message(latest)
+                    and not self.im_history.get(key)):
+                continue
+            self.im_groups.setdefault(key, {"id": target, "chatType": kind})
+            if latest and visible_message(latest):
+                # Summary messages are not inserted into history: retain them for previews only.
+                self.im_groups[key]["lastMessage"] = latest
+            read_at = service.store.get("im-read", f"{account_id}:{key}", 0)
+            self.im_unread[key] = int(item.get("unReadCount") or 0) if message_time(latest or {}) > read_at else 0
+        self.render_im_groups()
+        profiles = await self.provider().im_profiles(
+            users=[g["id"] for g in self.im_groups.values() if g["chatType"] == "singleChat"],
+            groups=[g["id"] for g in self.im_groups.values() if g["chatType"] == "groupChat"])
+        if account_id != self.account_id or self.section != "groups":
+            return
+        self.im_profiles.update(profiles)
+        for key, profile in profiles.items():
+            if key in self.im_groups:
+                conversation = self.im_groups[key]
+                if profile.get("name") != conversation["id"]:
+                    conversation["name"] = profile["name"]
+                conversation.update({k: v for k, v in profile.items() if k in ("avatar", "avatarPics")})
+        self.save_im_conversations()
+        self.render_im_groups()
+        if self.im_groups:
+            first = next(iter(sorted(self.im_groups, key=self.im_latest_time, reverse=True)))
+            await self.group_history(self.im_selected if self.im_selected in self.im_groups else first)
+        else:
+            self.im_selected = None
+            self.render_im_chat()
+            self.render_im_composer()
 
-    async def group_history(self, group_id):
-        result = await ui.run_javascript(f"return await window.courseIM.history({json.dumps(group_id)})", timeout=60)
-        if result.get("error"):
-            ui.notify("云端历史读取失败，将显示本地已接收消息：" + result["error"], type="warning")
+    def filter_im_groups(self, value):
+        self.im_query = value or ""
+        self.render_im_groups()
+
+    def filter_im_type(self, value):
+        self.im_filter = value or "all"
+        self.render_im_groups()
+
+    def im_group_name(self, key):
+        conversation = self.im_groups.get(key, {})
+        return str(conversation.get("name") or conversation.get("id") or "会话")
+
+    def im_latest(self, key):
+        visible = [m for m in self.im_history.get(key, []) if visible_message(m)]
+        cached = (visible or [{}])[-1]
+        summary = self.im_groups.get(key, {}).get("lastMessage") or {}
+        if not visible_message(summary):
+            summary = {}
+        latest = max([cached, summary], key=message_time)
+        return {**latest, "_recalled": True} if self.im_message_recalled(latest, key) else latest
+
+    def im_latest_time(self, key):
+        return message_time(self.im_latest(key))
+
+    def draw_im_avatar(self, profile, name, css="im-avatar", on_click=None):
+        pictures = [url for value in (profile.get("avatarPics") or [profile.get("avatar")])
+                    if (url := media_url(value))][:4]
+        avatar = ui.element("div").classes(css + (" im-avatar-grid" if len(pictures) > 1 else ""))
+        if on_click:
+            avatar.on("click", on_click).classes("cursor-pointer").props('role="button" tabindex=0')
+            avatar.on("keydown.enter", on_click)
+        with avatar:
+            if pictures:
+                for url in pictures:
+                    ui.image(url).props('no-spinner referrerpolicy="no-referrer"').classes("im-avatar-image")
+            else:
+                ui.label(name[:1] if name and not name.isdigit() else "群" if profile.get("chatType") == "groupChat" else "人")
+
+    def im_local_read_label(self, key):
+        if self.im_unread.get(key):
+            return f"{self.im_unread[key]} 条未读"
+        if service.store.get("im-read", f"{self.account_id}:{key}", 0):
+            return "本地已读"
+        return "无未读" if key in self.im_unread else "未同步"
+
+    def render_im_groups(self):
+        self.group_region.clear()
+        groups = sorted(self.im_groups, key=self.im_latest_time, reverse=True)
+        visible = [key for key in groups if self.im_query.casefold() in self.im_group_name(key).casefold()
+                   and (self.im_filter == "all" or self.im_groups[key]["chatType"] == self.im_filter)]
+        with self.group_region:
+            for key in visible:
+                name, conversation = self.im_group_name(key), self.im_groups[key]
+                latest = self.im_latest(key)
+                label = ("群聊 " if conversation["chatType"] == "groupChat" else "私聊 ") + name
+                with ui.button(on_click=lambda k=key: guarded(lambda: self.group_history(k))).props(
+                    f'flat no-caps aria-label={json.dumps("打开" + label, ensure_ascii=False)}'
+                ).classes("im-conversation" + (" selected" if key == self.im_selected else "")):
+                    with ui.row().classes("w-full items-center no-wrap gap-3"):
+                        self.draw_im_avatar(conversation, name)
+                        with ui.column().classes("im-conversation-copy"):
+                            with ui.row().classes("w-full items-center no-wrap gap-2"):
+                                ui.label(name).classes("im-conversation-name")
+                                ui.label(time_label(latest)).classes("im-conversation-time")
+                            ui.label(message_preview(latest) if latest else "点击查看聊天记录").classes("im-preview")
+                            label = self.im_local_read_label(key)
+                            ui.label(label).classes("im-conversation-read unread" if self.im_unread.get(key) else "im-conversation-read")
+                        if self.im_unread.get(key):
+                            ui.badge(str(self.im_unread[key])).classes("im-unread")
+            if not visible:
+                with ui.column().classes("im-list-empty"):
+                    ui.icon("forum", size="32px")
+                    ui.label("没有找到相关会话" if groups else "连接消息服务后，会话会显示在这里")
+
+    def render_im_chat(self, loading=False, scroll_bottom=True):
+        conversation = self.im_groups.get(self.im_selected, {})
+        self.im_chat_header.clear()
+        with self.im_chat_header:
+            self.draw_im_avatar(conversation, self.im_group_name(self.im_selected))
+            with ui.column().classes("gap-0 min-w-0"):
+                ui.label(self.im_group_name(self.im_selected) if self.im_selected else "消息").classes("im-chat-title")
+                subtitle = "群聊" if conversation.get("chatType") == "groupChat" else "私聊"
+                state = self.im_local_read_label(self.im_selected)
+                ui.label("正在同步云端消息…" if loading else f"{subtitle} · {state}" if self.im_selected else "选择会话开始聊天").classes("muted text-xs")
+            ui.space()
+            if self.im_selected:
+                ui.button(icon="refresh", on_click=lambda: guarded(lambda: self.group_history(self.im_selected))).props(
+                    'flat round aria-label="刷新聊天记录"')
         self.message_region.clear()
         with self.message_region:
-            messages = result.get("data", [])
-            local = [
-                r["message"]
-                for r in service.store.all("im-messages").values()
-                if r["account_id"] == self.account_id and str(r["message"].get("to", "")) == group_id
-            ]
-            messages = list({str(m.get("id") or i): m for i, m in enumerate(local + messages)}.values())
-            ui.label(f"群聊消息 · {len(messages)} 条").classes("section-title")
+            messages = [m for m in self.im_history.get(self.im_selected, []) if visible_message(m)]
+            if self.im_selected and not self.im_pages.get(self.im_selected, {}).get("isLast", False):
+                with ui.row().classes("w-full justify-center"):
+                    ui.button("加载更早消息", icon="history", on_click=lambda: guarded(self.load_older_im)).props("flat dense")
+            if not self.im_selected or not messages:
+                with ui.column().classes("im-chat-empty"):
+                    ui.icon("question_answer", size="54px")
+                    ui.label("选择一个会话" if not self.im_selected else "正在加载消息" if loading else "暂无聊天记录").classes("text-lg font-semibold")
+                    ui.label("支持群聊、私聊和云端消息漫游").classes("muted text-sm")
+            previous_day = ""
             for message in messages:
+                day = time_label(message, full=True).split(" ")[0]
+                if day and day != previous_day:
+                    ui.label(day).classes("im-date-divider")
+                    previous_day = day
                 self.draw_im_message(message)
-            if not messages:
-                ui.label("暂无可读取的历史消息，平台可能未开放漫游权限。").classes("muted")
+        self.im_scroll.scroll_to(percent=1 if scroll_bottom else 0)
 
-    def handle_im(self, message):
+    async def load_older_im(self):
+        if self.im_selected:
+            await self.group_history(self.im_selected, older=True)
+
+    async def group_history(self, group_id, older=False):
+        if not group_id or group_id not in self.im_groups:
+            return
+        page = self.im_pages.get(group_id, {})
+        if older and (page.get("isLast") or page.get("loading")):
+            return
+        changed = self.im_selected != group_id
+        self.im_selected = group_id
+        self.im_unread[group_id] = 0
+        self.im_request += 1
+        request, account_id = self.im_request, self.account_id
+        self.render_im_groups()
+        self.render_im_chat(loading=True, scroll_bottom=not older)
+        if changed or not hasattr(self, "im_input"):
+            self.render_im_composer()
+        conversation = self.im_groups[group_id]
+        args = json.dumps([conversation["id"], conversation["chatType"], page.get("cursor", -1) if older else -1])
+        self.im_pages.setdefault(group_id, {})["loading"] = True
+        try:
+            result = await ui.run_javascript(f"return await window.courseIM.historyPage(...{args})", timeout=60)
+        finally:
+            if account_id == self.account_id:
+                self.im_pages.setdefault(group_id, {})["loading"] = False
+        if request != self.im_request or account_id != self.account_id or self.section != "groups":
+            return
+        if result.get("error"):
+            ui.notify("云端漫游读取失败，保留本地消息：" + result["error"], type="warning")
+        else:
+            self.im_pages[group_id] = {"cursor": result.get("cursor"), "isLast": result.get("isLast", False)}
+            for message in result.get("data", []):
+                message = {**message, "chatType": conversation["chatType"], "_account_id": account_id}
+                # History can omit 'to'; use the requested conversation in that case.
+                message.setdefault("to", conversation["id"])
+                self.cache_im_message(message, group_id)
+        users = {str(m.get("from") or "").split("/")[0] for m in self.im_history.get(group_id, [])}
+        profiles = await self.provider().im_profiles(users=users)
+        if request != self.im_request or account_id != self.account_id or self.section != "groups":
+            return
+        self.im_profiles.update(profiles)
+        self.im_unread[group_id] = 0
+        service.store.put("im-read", f"{account_id}:{group_id}", time.time())
+        self.render_im_groups()
+        self.render_im_chat(scroll_bottom=not older)
+
+    def apply_im_control(self, message, render=True):
         if message.get("_account_id") != self.account_id:
             return
-        key = f"{self.account_id}:{message.get('id') or __import__('uuid').uuid4().hex}"
-        service.store.put("im-messages", key, {"account_id": self.account_id, "message": message})
-        self.im_messages.append(message)
-        self.im_messages = self.im_messages[-200:]
+        event = control_update(message, self.im_self_id())
+        if not event:
+            return
+        key = event.get("key")
+        if not key:
+            return
+        account_id = self.account_id
+        kind = event["kind"]
+        if kind == "local-read":
+            store_key = f"{account_id}:{key}"
+            previous = service.store.get("im-read", store_key, 0)
+            service.store.put("im-read", store_key, max(previous, event["time"]))
+            if self.im_latest_time(key) <= max(previous, event["time"]):
+                self.im_unread[key] = 0
+        elif kind in ("peer-read", "peer-channel", "group-read"):
+            if kind == "peer-read":
+                receipts = {event["mid"]: {"read": True}}
+            elif kind == "group-read":
+                receipts = {str(mid): {"count": count} for mid, count in event["counts"].items()
+                            if isinstance(count, int) and count >= 0}
+            else:
+                # A channel receipt covers messages known at receipt time, not future messages.
+                receipts = {str(m.get("serverMsgId") or m.get("id") or ""): {"read": True}
+                            for m in self.im_history.get(key, [])
+                            if str(m.get("from") or "").split("/")[0] == self.im_self_id()}
+            for mid, receipt in receipts.items():
+                if not mid:
+                    continue
+                store_key = f"{account_id}:{key}:{mid}"
+                previous = service.store.get("im-receipts", store_key, {})
+                if "count" in receipt:
+                    receipt["count"] = max(previous.get("count", 0), receipt["count"])
+                service.store.put("im-receipts", store_key, {**previous, **receipt})
+        elif kind == "recall":
+            service.store.put("im-recalls", f"{account_id}:{key}:{event['mid']}",
+                              {"sender": event["sender"], "confirmed": message.get("type") == "recall"})
+        if render and self.section == "groups" and hasattr(self, "group_region"):
+            self.render_im_groups()
+            if key == self.im_selected:
+                self.render_im_chat()
+
+    def im_message_recalled(self, message, key):
+        mid = str(message.get("serverMsgId") or message.get("id") or "")
+        recall = service.store.get("im-recalls", f"{self.account_id}:{key}:{mid}", {})
+        sender = str(message.get("from") or "").split("/")[0]
+        return bool(recall and (recall.get("confirmed") or recall.get("sender") == sender))
+
+    def cache_im_message(self, message, key=None):
+        if not visible_message(message):
+            self.apply_im_control(message, render=False)
+            return
+        key = key or message_session(message, self.im_self_id())
+        if not key:
+            return
+        record_id = str(message.get("serverMsgId") or message.get("id") or message.get("mid") or __import__('uuid').uuid4().hex)
+        service.store.put("im-messages", f"{self.account_id}:{key}:{record_id}",
+                          {"account_id": self.account_id, "message": message, "session": key})
+        self.im_history[key] = merge_messages(self.im_history.get(key, []), [message])
+        if key not in self.im_groups:
+            kind, target = key.split(":", 1)
+            self.im_groups[key] = {"id": target, "chatType": kind}
+
+    async def handle_im(self, message):
+        if message.get("_account_id") != self.account_id:
+            return
+        if not visible_message(message):
+            self.apply_im_control(message)
+            return
+        account_id = self.account_id
+        key = message_session(message, self.im_self_id())
+        if not key:
+            return
+        self.cache_im_message(message, key)
+        sender = str(message.get("from") or "").split("/")[0]
+        if sender != self.im_self_id() and (key != self.im_selected or self.section != "groups"):
+            self.im_unread[key] = self.im_unread.get(key, 0) + 1
+        elif self.section == "groups":
+            service.store.put("im-read", f"{account_id}:{key}", time.time())
         if self.section == "groups":
-            with self.message_region:
-                self.draw_im_message(message)
-        activity = (message.get("ext") or {}).get("attachment", {})
-        if isinstance(activity, str):
-            try:
-                activity = json.loads(activity)
-            except ValueError:
-                activity = {}
-        if isinstance(activity, dict) and activity.get("att_chat_course"):
+            self.render_im_groups()
+            if key == self.im_selected:
+                self.render_im_chat()
+        conversation = self.im_groups[key]
+        sender = str(message.get("from") or "").split("/")[0]
+        users = [sender] + ([conversation["id"]] if conversation["chatType"] == "singleChat" else [])
+        profiles = await self.provider().im_profiles(users=users,
+                    groups=[conversation["id"]] if conversation["chatType"] == "groupChat" else [])
+        if account_id != self.account_id:
+            return
+        self.im_profiles.update(profiles)
+        profile = profiles.get(key, {})
+        if profile.get("name") != conversation["id"]:
+            conversation.update(profile)
+        self.save_im_conversations()
+        if self.section == "groups":
+            self.render_im_groups()
+            if key == self.im_selected:
+                self.render_im_chat()
+        if attachment_info(message):
             ui.notify("收到新的课堂活动", timeout=8000)
 
     def draw_im_message(self, message):
-        ext = message.get("ext") or message.get("attributes") or {}
-        attachment = ext.get("attachment") or {}
-        if isinstance(attachment, str):
-            try:
-                attachment = json.loads(attachment)
-            except ValueError:
-                attachment = {}
-        info = attachment.get("att_chat_course") or attachment.get("att_sign") or {}
-        with ui.column().classes("panel w-full gap-2"):
-            ui.label(str(message.get("from", "课堂消息"))).classes("muted text-xs")
-            ui.label(str(info.get("title") or message.get("msg") or "活动消息"))
-            if info.get("aid"):
+        if not visible_message(message):
+            return
+        if message.get("type") == "cmd":
+            ui.label(system_notice(message)).classes("im-system-notice")
+            return
+        key = message_session(message, self.im_self_id())
+        mid = str(message.get("serverMsgId") or message.get("id") or "")
+        recalled = self.im_message_recalled(message, key)
+        info = attachment_info(message)
+        sender = str(message.get("from") or "课堂消息").split("/")[0]
+        mine = sender == self.im_self_id()
+        profile = self.im_profiles.get(session_key("singleChat", sender), {})
+        nickname = "我" if mine else profile.get("name") or sender
+        with ui.row().classes("im-message" + (" mine" if mine else "")):
+            self.draw_im_avatar(profile, nickname, "im-message-avatar",
+                                on_click=lambda uid=sender: guarded(lambda: self.start_im_private(uid)))
+            with ui.column().classes("im-message-content"):
+                with ui.row().classes("im-message-meta items-center gap-2"):
+                    ui.button(nickname, on_click=lambda uid=sender: guarded(lambda: self.start_im_private(uid))).props("flat dense").classes("im-nickname")
+                    ui.label(time_label(message, full=True))
+                    if mine:
+                        receipt = service.store.get("im-receipts", f"{self.account_id}:{key}:{mid}", {})
+                        label = receipt_label(message, receipt)
+                        ui.label(label).classes("im-message-read confirmed" if label == "已读" else "im-message-read").tooltip(
+                            "对方已读状态以收到的回执为准；待确认不代表对方一定未读")
+                    else:
+                        ui.label("本地已读").classes("im-message-read")
+                with ui.column().classes("im-bubble" + (" im-activity" if info else "") + (" im-recalled" if recalled else "")):
+                    if recalled:
+                        ui.label("已撤回").classes("im-recalled-label")
+                    if info:
+                        with ui.row().classes("items-center gap-2 text-teal-700"):
+                            ui.icon("campaign", size="18px")
+                            ui.label("课堂活动").classes("text-xs font-semibold")
+                    url = media_url(message.get("url") or (message.get("body") or {}).get("url"))
+                    if message.get("type") == "img" and url:
+                        ui.image(url).props('no-spinner referrerpolicy="no-referrer"').classes("im-inline-image")
+                    elif message.get("type") in ("file", "audio", "video") and url:
+                        ui.link(message.get("filename") or message_preview(message), url, new_tab=True).classes("im-file-link")
+                    else:
+                        ui.label(message_preview(message)).classes("im-message-text")
+                    if info.get("aid"):
+                        async def open_message():
+                            ci = info.get("courseInfo") or {}
+                            course = {"courseId": str(ci.get("courseid", "")), "classId": str(ci.get("classid", ""))}
+                            active = {"id": str(info["aid"]), "type": int(info.get("atype", 2)),
+                                      "name": info.get("title", ""), "url": info.get("url", ""), "signType": "0"}
+                            await self.open_activity(course, active, group=not bool(course["courseId"]))
+                        ui.button("打开活动", icon="arrow_forward", on_click=lambda: guarded(open_message)).props("flat dense")
 
-                async def open_message():
-                    ci = info.get("courseInfo") or {}
-                    course = {"courseId": str(ci.get("courseid", "")), "classId": str(ci.get("classid", ""))}
-                    active = {
-                        "id": str(info["aid"]),
-                        "type": int(info.get("atype", 2)),
-                        "name": info.get("title", ""),
-                        "url": info.get("url", ""),
-                        "signType": "0",
-                    }
-                    await self.open_activity(course, active, group=not bool(course["courseId"]))
-
-                primary("打开活动", lambda: guarded(open_message), "open_in_new")
 
     def render_history(self):
         self.heading("ACTIVITY LOG", "操作记录", "查看手动提交的逐账号结果。记录保存在后端服务中。")

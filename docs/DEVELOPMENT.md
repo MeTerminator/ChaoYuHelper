@@ -16,8 +16,6 @@ app/
   media.py                 PPT 图片格式识别
   providers/               学习通、雨课堂 HTTP / WebSocket 协议
   static/                  样式、环信 SDK 源码与打包产物
-scripts/read_only_check.py 凭据从标准输入进入的临时会话只读检查
-tests/                    协议测试、隔离的浏览器测试服务与用户流程测试
 docs/                     使用、开发、API 与历史验证报告
 data/                     本地账号数据、密钥和 Token（不纳入版本控制）
 .nicegui/                 浏览器偏好等状态（不纳入版本控制）
@@ -25,22 +23,17 @@ data/                     本地账号数据、密钥和 Token（不纳入版本
 
 项目已从旧子目录迁移至根目录。所有启动命令在根目录执行，源码通过文件位置解析静态资源和默认数据目录。
 
-## 安装与测试
+## 安装与检查
 
 ```bash
 uv sync --locked --extra dev
-uv run --locked --extra dev playwright install chromium
-uv run --locked --extra dev ruff check app main.py scripts tests
-uv run --locked --extra dev pytest -q
+uv run --locked --extra dev ruff check app main.py
+node --check app/static/im.js
 ```
 
-测试用模拟 HTTP 响应和隔离的浏览器服务，不使用真实凭据、不执行真实平台提交。浏览器测试的数据和 界面状态均进入临时目录；默认截图也在测试临时目录。需要保留截图时：
+测试目录已按维护要求移除；历史报告中的测试数量与命令仅记录当时的验证，不代表当前仓库仍包含这些用例。进行联调时使用模拟数据或明确的只读范围，不向真实联系人发送测试消息。
 
-```bash
-COURSE_HELPER_TEST_ARTIFACTS="$PWD/artifacts/screenshots" uv run --locked --extra dev pytest tests/test_ui_story.py -q
-```
-
-`artifacts/` 是可再生成目录，已排除版本控制。测试后可以删除 `.pytest_cache/`、`.ruff_cache/`、`__pycache__/`。`.venv/` 为当前根目录重新创建的运行环境；需要重建时删除后执行 `uv sync --locked`。不要移动或复制旧虚拟环境代替重建。
+`artifacts/` 是可再生成目录，已排除版本控制；`.pytest_cache/`、`.ruff_cache/` 和 `__pycache__/` 也不纳入提交。需要重建虚拟环境时执行 `uv sync --locked`，不要复制旧虚拟环境。
 
 ## 环信资源构建
 
@@ -57,7 +50,7 @@ npm run build:im
 
 应用以正常模式运行，界面中手动点击会执行对应的平台操作。开发回归使用模拟 HTTP、SDK 和临时数据库；个人账号联调仍应按测试范围选择读取接口。
 
-`scripts/read_only_check.py` 是独立的开发诊断脚本，自带读取白名单，不影响应用运行。它从标准输入接收一行 JSON 凭据，使用临时加密会话并输出脱敏计数；不会调用签到、入课堂、答题、上传或回复接口。凭据不得写入源码、命令行参数、共享日志或报告。
+凭据不得写入源码、命令行参数、共享日志或报告。本地账号数据、密钥和 Token 由 `data/` 管理，该目录不纳入版本控制。
 
 ## 故障排查
 
@@ -69,6 +62,7 @@ npm run build:im
 | 课程空白或账号消失 | 核对平台、雨课堂服务器和账号，手动刷新课程；平台接口可能要求重新登录 |
 | 新设备验证 / 验证码错误 | 在界面中由用户完成验证，或选择对应的短信 / 二维码登录；不要连续重试或绕过验证 |
 | `UNAUTHENTICATED` | 核查服务器、会话是否过期，以及保存的 Web / App 登录方式是否与 `x-client` 匹配 |
+| 消息服务登录设备数超限（214） | 先退出其他电脑、浏览器或旧版助手的消息会话，再连接；仅关闭页面可能需要等待服务端释放名额。本应用复用连接中的请求和当前已连接会话，可用“断开消息服务”主动退出；固定设备标识无法提高平台上限 |
 | 解密失败 | 确认数据库与 `.key` 来自同一次备份；不要替换或重新生成现有密钥 |
 
 ## 后续扩展
@@ -83,7 +77,13 @@ npm run build:im
 
 作业列表、详情结构来自官方真实只读页面；作答表单和提交协议参考现有表单约定及[公开实现源码](https://greasyfork.org/fr-CA/scripts/583231/code)，采用独立实现。手动作答仅用模拟 HTML / HTTP 验证，没有打开用户的未交作业。已补充签名分页合并、图片 / 文件附件、排序 / 连线内部值映射和多编辑器字段的模拟验证；不要把模拟覆盖描述为真实作业提交成功。排序与连线字段另参考[题目控件解析源码](https://github.com/iPycc/Fk-Chaoxing-Extension/blob/main/modules/question/parse/dropdown.js)，采用独立 Python 实现。
 
-IM 适配使用 `easemob-websdk@4.24.0` 源码中的 `connection.osType` 字段，在建立连接前设为原应用的 Linux 设备类型 `2`。SDK 默认类型 `16` 在原项目已记录可能被平台拒绝。测试替身验证生命周期和账号隔离，未建立真实 IM 会话。
+IM 适配保留 `easemob-websdk@4.24.0` 的默认 Web 设备类型 `16`，从 `GET https://learn.chaoxing.com/apis/user/getUserImToken?crossOrigin=true` 的 `msg.uid` / `msg.hxToken` 获取登录凭证，再调用 `open({user, accessToken})`。登录前后均指定 `https://a3-vip6.easemob.com` 为 REST 地址，避免 DNS 发现覆盖。固定设备标识由 SDK 在浏览器本地保存。群聊带 `needAffiliations` 时从 `entities` 读取 `groupId/groupName`；历史消息按 `cursor/isLast` 向前分页。详见 [官方消息页核对记录](reports/2026-11-04-im-review.md)。
+
+历史 IM 回归覆盖会话分页、群聊 / 私聊路由、历史游标、账号隔离、资料缓存和展示归一化；测试目录现已移除。实际只读验证见上述核对记录。IM 静态脚本以内容哈希作版本参数，防止浏览器加载旧脚本。
+
+用户和群聊资料由 `im.chaoxing.com/webim/user/getUserInfoByTuid` 与 `/webim/huanxin/getGroupInfo` 读取，必须覆盖手机客户端默认请求头，使用网页的 `Accept: application/json, text/plain, */*` 等头；真实验证发现沿用手机头会得到 `text/plain;charset=ISO-8859-1`，中文名称已经在服务端退化为问号，无法仅靠客户端改编码恢复。
+
+会话以 `chatType:targetId` 为键，私聊按消息方向选择对方 ID；消息、会话、草稿和本地已读时间均按账号存于加密 Store。漫游每页 30 条，通过 `cursor/isLast` 加载更早消息。发送仅由按钮或 Ctrl+Enter 调用 `sendText`，当前支持纯文字，限制为 5000 UTF-8 字节；失败或超时保留草稿，不自动重发。测试不得向真实联系人发送消息。
 
 
 ### 作业分页与附件
