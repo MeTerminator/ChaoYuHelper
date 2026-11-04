@@ -26,3 +26,41 @@ body{font-family:Inter,-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft
 .system-settings-form button{margin-top:8px;background:var(--accent);color:white;border:0;border-radius:10px;padding:10px 20px;font:inherit;cursor:pointer}
 .topbar{height:auto;min-height:76px;flex-wrap:wrap}
 @media(max-width:800px){.topbar .breadcrumb{display:none}.topbar{gap:8px;padding:10px 12px}.header-account{width:160px!important;flex:1}.stat{min-width:150px}.sidebar{max-width:85vw}}
+
+/* Homework only accepts normalized markup and locally namespaced classes. */
+.homework-content{min-width:0;max-width:100%;overflow-wrap:anywhere;line-height:1.75;font-size:15px;isolation:isolate}
+.homework-content *{box-sizing:border-box}
+.homework-content :is(h1,h2,h3,h4,h5,h6){font-size:1.05em;font-weight:650;line-height:1.7;margin:0 0 12px}
+.homework-content p{margin:6px 0}
+.homework-content .hw-title p,.homework-content .hw-options p{display:inline}
+.homework-content :is(ul,ol){padding-left:24px;margin:12px 0}
+.homework-content .hw-options{list-style:none;padding-left:0}
+.homework-content li{margin:8px 0}
+.homework-content :is(dl,dt,dd){margin:0}
+.homework-content dd{padding:4px 0 4px 16px}
+.homework-content i{font-style:normal}
+.homework-content .hw-answer{background:#f5f7fb;border:1px solid #e5eaf1;border-radius:10px;padding:14px 16px;margin-top:16px}
+.homework-content .hw-answer-key{display:flex;flex-wrap:wrap;gap:8px 24px}
+.homework-content .hw-answer-block+.hw-answer-block{margin-top:12px}
+.homework-content .hw-analysis{border-top:1px solid #e5eaf1;padding-top:12px;margin-top:12px}
+.homework-content .hw-correct{color:#23735e}
+.homework-content .hw-incorrect{color:#b83b3b}
+.homework-content .hw-muted{color:#7d899b;font-weight:400}
+.homework-content .hw-score{font-size:13px;color:#317868;margin:8px 0}
+.homework-content .hw-score:before{content:'得分：'}
+.homework-content .hw-newlines{white-space:pre-wrap}
+.homework-content img{display:inline-block;max-width:100%;height:auto;vertical-align:middle;object-fit:contain}
+.homework-content table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:12px 0}
+.homework-content :is(td,th){border:1px solid #dce3eb;padding:6px 10px}
+.homework-content pre{max-width:100%;overflow:auto;white-space:pre-wrap}
+.homework-content a{color:#317868;text-decoration:underline}
+
+.course-actions .course-action-btn{width:96px;min-width:96px;height:32px;min-height:32px;padding:4px;font-size:14px;line-height:1.4;border-radius:10px;flex:none}
+.course-actions .course-action-btn .q-icon{font-size:24px}
+
+.page-navigation{display:flex;flex-wrap:wrap;gap:4px;min-width:0;flex:1}
+.navigation-link{font-size:14px;border-radius:6px;min-height:28px}
+.navigation-current{font-size:14px;color:var(--muted)}
+.homework-list-title{min-width:160px;overflow-wrap:anywhere}
+.homework-details .q-item{padding:8px 0;min-height:36px;color:var(--accent)}
+@media(max-width:800px){.topbar .page-navigation{order:5;flex-basis:100%;padding-top:6px;border-top:1px solid #e6ebf0}.navigation-link,.navigation-current{font-size:13px}}

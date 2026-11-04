@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from html import escape
 from io import BytesIO
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from nicegui import app, background_tasks, ui
 
@@ -20,6 +20,8 @@ from .activity import (
     validate_answers,
 )
 from .auth import CSRF_COOKIE
+from .homework_content import clean_homework_html
+from .homework_media import homework_images
 from .media import image_extension
 from .providers.base import ProviderError
 from .providers.chaoxing import text
@@ -45,6 +47,11 @@ SIGN_TYPES = {"0": "普通签到", "2": "二维码签到", "3": "手势签到", 
 
 def rich(content):
     return ui.html(str(content or ""), sanitize=True).classes("question-content w-full")
+
+
+def homework_rich(content, account_id, **kwargs):
+    cleaned = clean_homework_html(content, lambda url: homework_images.url(account_id, url), **kwargs)
+    return ui.html(cleaned, sanitize=True).classes("homework-content w-full")
 
 
 def field(label, value="", password=False):
@@ -118,7 +125,7 @@ class Dashboard:
             self.live_task.cancel()
             self.live_task = None
 
-    def build(self):
+    def build(self, render=True):
         ui.colors(primary="#317868", secondary="#748a85", positive="#317868")
         ui.add_css((__import__("pathlib").Path(__file__).parent / "static/style.css").read_text())
         ui.add_head_html('<script src="/assets/im.js"></script>')
@@ -144,11 +151,13 @@ class Dashboard:
                 self.nav_buttons[key] = (
                     ui.button(title, icon=icon, on_click=lambda k=key: self.navigate(k))
                     .props("flat no-caps color=white")
-                    .classes("nav-button")
+                    .classes("nav-button" + (" active" if key == self.section else ""))
                 )
         with ui.header().classes("topbar items-center gap-4"):
             ui.button(icon="menu", on_click=drawer.toggle).props("flat round dense")
-            ui.label("工作空间 / 课程管理").classes("text-sm muted breadcrumb")
+            self.page_navigation = ui.element("nav").props(
+                'aria-label="页面导航"'
+            ).classes("page-navigation items-center")
             ui.space()
             csrf = escape(self.client.request.cookies.get(CSRF_COOKIE, ""), quote=True)
             ui.html(
@@ -179,9 +188,24 @@ class Dashboard:
                 .classes("w-52 header-account")
             )
         self.body = ui.column().classes("w-full gap-6")
-        self.render()
+        if render:
+            self.render()
+
+    def set_navigation(self, items):
+        self.page_navigation.clear()
+        with self.page_navigation:
+            for index, (label, callback) in enumerate(items):
+                if index:
+                    ui.icon("chevron_right", size="16px").classes("muted")
+                if callback:
+                    ui.button(label, on_click=callback).props("flat dense").classes("navigation-link")
+                else:
+                    ui.label(label).props('aria-current="page"').classes("navigation-current")
 
     def navigate(self, section):
+        if self.client.request.url.path.startswith("/homework"):
+            ui.navigate.to("/?" + urlencode({"section": section}))
+            return
         self.stop_live()
         self.section, self.course = section, None
         self.render()
@@ -209,6 +233,9 @@ class Dashboard:
         self.account_id, self.course, self.section = value or "", None, "courses"
         app.storage.user["account_id"] = self.account_id
         await ui.run_javascript("window.courseIM?.close()")
+        if self.client.request.url.path.startswith("/homework"):
+            ui.navigate.to("/")
+            return
         self.render()
 
     def heading(self, eyebrow, title, subtitle):
@@ -218,6 +245,10 @@ class Dashboard:
             ui.label(subtitle).classes("muted text-sm")
 
     def render(self):
+        titles = {"courses": "我的课程", "accounts": "账号管理", "groups": "群聊与消息",
+                  "history": "操作记录", "settings": "系统设置"}
+        self.set_navigation([("我的课程", lambda: self.navigate("courses")), (titles[self.section], None)]
+                            if self.section != "courses" else [("我的课程", None)])
         for key, button in self.nav_buttons.items():
             button.classes(add="active" if key == self.section else "", remove="" if key == self.section else "active")
         self.body.clear()
@@ -340,16 +371,20 @@ class Dashboard:
                     with ui.column().classes("p-5 w-full gap-2"):
                         ui.label(course["name"]).classes("course-name")
                         ui.label(f"{course.get('teacher', '')} · {course.get('note', '')}").classes("muted text-xs")
-                        with ui.row().classes("w-full items-center mt-3"):
-                            ui.button("课程设置", icon="tune", on_click=lambda c=course: self.settings_dialog(c)).props(
-                                "flat dense size=sm"
-                            )
-                            ui.space()
+                        with ui.row().classes("course-actions w-full items-center mt-3 gap-2"):
+                            ui.button(
+                                "课程设置", icon="tune", on_click=lambda c=course: self.settings_dialog(c),
+                            ).props("flat dense").classes("course-action-btn")
+                            if self.platform == "chaoxing":
+                                ui.button(
+                                    "课程作业", icon="assignment",
+                                    on_click=lambda c=course: self.homework_navigate(c),
+                                ).props("outline dense").classes("course-action-btn")
                             primary(
                                 "进入课堂" if self.platform == "rainClassroom" else "查看活动",
                                 lambda c=course: guarded(lambda: self.open_course(c)),
                                 "arrow_forward",
-                            )
+                            ).props("dense").classes("course-action-btn")
 
     async def refresh_courses(self):
         if not self.account_id:
@@ -742,6 +777,7 @@ class Dashboard:
         if generation != self.live_generation:
             return
         self.course = course
+        self.set_navigation([("我的课程", lambda: self.navigate("courses")), (course["name"], None)])
         self.body.clear()
         with self.body:
             ui.button("返回课程", icon="arrow_back", on_click=lambda: self.navigate("courses")).props("flat")
@@ -755,20 +791,21 @@ class Dashboard:
                     ).props("outline")
                     ui.button("课程设置", icon="tune", on_click=lambda: self.settings_dialog(course)).props("outline")
                     primary("刷新活动", lambda: guarded(lambda: self.open_course(course)), "refresh")
-            ongoing = ui.switch("仅看进行中", value=False)
             counts = {key: sum(a["type"] == key for a in activities) for key in TYPES}
-            category = (
-                ui.select(
-                    {
-                        0: f"全部活动（{len(activities)}）",
-                        **{key: f"{label}（{counts[key]}）" for key, (label, _) in TYPES.items()},
-                    },
-                    value=0,
-                    label="活动功能",
+            with ui.row().classes("w-full items-center justify-between flex-nowrap"):
+                ongoing = ui.switch("仅看进行中", value=False).classes("shrink-0")
+                category = (
+                    ui.select(
+                        {
+                            0: f"全部活动（{len(activities)}）",
+                            **{key: f"{label}（{counts[key]}）" for key, (label, _) in TYPES.items()},
+                        },
+                        value=0,
+                        label="活动功能",
+                    )
+                    .props("outlined dense")
+                    .style("width: 240px; max-width: 55%")
                 )
-                .props("outlined dense")
-                .classes("w-full")
-            )
             rows = ui.column().classes("w-full gap-3")
 
             def draw():
@@ -824,47 +861,135 @@ class Dashboard:
         else:
             raise ProviderError("原应用未提供该活动的专用操作，请在平台 APP 中查看")
 
+    def homework_navigate(self, course, mode="", work=None):
+        params = {"account": self.account_id, "course": course["courseId"], "class_id": course["classId"]}
+        if work is not None:
+            params["work_id"] = work["id"]
+        ui.navigate.to("/homework" + (f"/{mode}" if mode else "") + "?" + urlencode(params))
+
     async def homework_dialog(self, course):
-        provider = self.provider()
-        account_id = self.account_id
+        self.homework_navigate(course)
+
+    def homework_heading(self, course, title, subtitle, back_to_list=False):
+        items = [("我的课程", lambda: ui.navigate.to("/"))]
+        if back_to_list:
+            items.append(("课程作业", lambda: self.homework_navigate(course)))
+        items.append((title, None))
+        self.set_navigation(items)
+        self.body.clear()
+        with self.body:
+            ui.button(
+                "返回课程作业" if back_to_list else "返回课程",
+                icon="arrow_back",
+                on_click=(lambda: self.homework_navigate(course)) if back_to_list else (lambda: ui.navigate.to("/")),
+            ).props("flat")
+            self.heading("COURSE HOMEWORK", title, subtitle)
+
+    async def homework_list_page(self, course):
         generation = self.live_generation
-        works = await provider.homework_list(course)
+        works = await self.provider().homework_list(course)
         if generation != self.live_generation:
             return
-        with ui.dialog() as dialog, ui.card().classes("w-[850px] p-7 gap-4"):
-            ui.label("课程作业").classes("text-xl font-bold")
+        self.homework_heading(course, "课程作业", course["name"])
+        account = service.store.get("accounts", self.account_id, {})
+        submitted_statuses = ("已完成", "待批阅", "已提交")
+        submitted = sum(w["status"] in submitted_statuses for w in works)
+        with self.body:
+            with ui.row().classes("w-full gap-4"):
+                for label, value in [("全部作业", len(works)), ("已提交 / 已完成", submitted),
+                                     ("其他状态", len(works) - submitted)]:
+                    with ui.column().classes("panel stat gap-1"):
+                        ui.label(label).classes("muted text-sm")
+                        ui.label(str(value)).classes("stats-value")
+            with ui.row().classes("panel w-full items-center justify-between gap-4"):
+                with ui.column().classes("gap-1"):
+                    ui.label(course["name"]).classes("font-semibold")
+                    ui.label(" · ".join(v for v in [course.get("teacher"), course.get("note")] if v)).classes(
+                        "muted text-sm")
+                    ui.label(f"当前作答账号：{account.get('name', '')} · {account.get('uid', '')}").classes(
+                        "muted text-sm")
+                ui.button("刷新作业", icon="refresh", on_click=lambda: guarded(
+                    lambda: self.homework_list_page(course))).props("outline")
             if not works:
-                ui.label("该课程暂无作业").classes("muted")
+                self.empty("assignment", "该课程暂无作业", "老师发布作业后，可点击刷新作业查看。")
             panels = []
+            descriptions = {"已完成": "作业已完成，可查看自己的答案及老师已开放的批阅信息。",
+                            "待批阅": "已提交，等待老师批阅。", "已提交": "已提交，可查看作答记录。"}
             for work in works:
-                with ui.row().classes("activity-row w-full items-center") as panel:
+                with ui.column().classes("panel w-full gap-3") as panel:
                     panels.append(panel)
-                    ui.label(work["name"]).classes("grow font-semibold")
-                    ui.label(work["status"]).classes("pill")
-
-                    async def show(w=work):
-                        detail = await provider.homework_review(w)
-                        with ui.dialog() as reader, ui.card().classes("w-[950px] p-7 gap-5"):
-                            ui.label(w["name"]).classes("text-xl font-bold")
-                            question_panels = []
-                            for question in detail["questions"]:
-                                with ui.column().classes("w-full") as question_panel:
-                                    rich(question)
-                                    question_panels.append(question_panel)
-                            self.paginate_panels(question_panels, 5, "作答记录")
-                            ui.button("关闭详情", on_click=reader.close).props("flat")
-                        reader.open()
-
-                    if work["status"] in ("已完成", "待批阅", "已提交"):
-                        ui.button("作答记录", on_click=lambda w=work: guarded(lambda: show(w))).props("flat")
-                    else:
+                    completed = work["status"] in submitted_statuses
+                    with ui.row().classes("w-full items-center gap-3"):
+                        ui.icon("assignment_turned_in" if completed else "assignment", size="24px").classes(
+                            "text-teal-700")
+                        ui.label(work["name"]).classes("grow font-semibold homework-list-title")
+                        ui.label(work["status"]).classes("pill")
                         ui.button(
-                            "作答", on_click=lambda w=work: self.homework_start_dialog(provider, account_id, w)
+                            "作答记录" if completed else "作答",
+                            on_click=lambda w=work, done=completed: self.homework_navigate(
+                                course, "review" if done else "answer", w),
                         ).props("outline")
+                    ui.label(descriptions.get(work["status"], "请查看平台作业要求，确认开放时间后进入作答。")).classes(
+                        "muted text-sm")
+                    for line in work.get("details", []):
+                        ui.label(line).classes("text-sm")
+                    if completed:
+                        with ui.expansion("详细信息", icon="info_outline").classes("w-full homework-details") as expansion:
+                            detail_box = ui.column().classes("w-full gap-2")
+
+                        async def load_details(e, w=work, box=detail_box, state={"loaded": False, "loading": False}):
+                            if not e.value or state["loaded"] or state["loading"]:
+                                return
+                            state["loading"] = True
+                            generation = self.live_generation
+                            box.clear()
+                            with box:
+                                ui.label("正在加载作业信息…").classes("muted text-sm")
+                            try:
+                                detail = await self.provider().homework_review(w)
+                                if generation != self.live_generation or box.is_deleted:
+                                    return
+                                box.clear()
+                                with box:
+                                    ui.label(f"题量：{len(detail['questions'])} 题").classes("text-sm")
+                                    for line in detail.get("details", []):
+                                        ui.label(line).classes("text-sm")
+                                    ui.label("答案、得分和解析请进入作答记录查看，以老师开放的信息为准。").classes(
+                                        "muted text-sm")
+                                state["loaded"] = True
+                            except Exception as exc:
+                                if not box.is_deleted:
+                                    box.clear()
+                                    with box:
+                                        ui.label(f"加载失败：{exc}。收起后重新展开可重试。").classes("text-red-700 text-sm")
+                            finally:
+                                state["loading"] = False
+
+                        expansion.on_value_change(load_details)
             self.paginate_panels(panels, 10, "作业列表")
             ui.label("作业按当前账号独立作答；参考答案和解析以老师开放范围为准。").classes("muted text-sm")
-            ui.button("关闭", on_click=dialog.close).props("flat")
-        dialog.open()
+
+    async def homework_review_page(self, course, work):
+        generation = self.live_generation
+        account_id = self.account_id
+        detail = await self.provider().homework_review(work)
+        if generation != self.live_generation:
+            return
+        self.homework_heading(course, "作答记录", f"{course['name']} · {work['name']}", True)
+        with self.body:
+            with ui.row().classes("panel w-full gap-4"):
+                ui.label(f"共 {len(detail['questions'])} 题").classes("font-semibold")
+                ui.label(f"作业状态：{work['status']}").classes("text-sm")
+                for line in detail.get("details", []):
+                    ui.label(line).classes("muted text-sm")
+            panels = []
+            for question in detail["questions"]:
+                with ui.column().classes("panel w-full gap-3") as panel:
+                    homework_rich(question, account_id)
+                    panels.append(panel)
+            if not panels:
+                self.empty("description", "暂无作答记录", "平台尚未开放可查看的题目或记录。")
+            self.paginate_panels(panels, 5, "作答记录")
 
     def paginate_panels(self, panels, size, label):
         if not panels:
@@ -884,27 +1009,32 @@ class Dashboard:
             pager.on_value_change(draw)
             draw()
 
-    def homework_start_dialog(self, provider, account_id, work):
-        with ui.dialog() as confirmation, ui.card().classes("w-[550px] p-7 gap-4"):
-            ui.label(work["name"]).classes("section-title")
+    def homework_start_page(self, course, provider, account_id, work):
+        self.homework_heading(course, "作业作答", f"{course['name']} · {work['name']}", True)
+        with self.body, ui.column().classes("panel w-full gap-4"):
             ui.label("进入作答可能启动平台的限时作业计时。请准备好后开始。")
 
             async def start():
                 if self.account_id != account_id:
                     raise ProviderError("账号已切换，请重新打开作业")
-                questions = await provider.homework_open(work)
-                confirmation.close()
-                self.homework_answer_dialog(provider, account_id, work, questions)
+                generation = self.live_generation
+                start_button.disable()
+                try:
+                    questions = await provider.homework_open(work)
+                    if generation != self.live_generation:
+                        return
+                    self.homework_answer_page(course, provider, account_id, work, questions)
+                finally:
+                    if not start_button.is_deleted:
+                        start_button.enable()
 
-            ui.button("取消", on_click=confirmation.close).props("flat")
-            primary("开始作答", lambda: guarded(start), "edit_note")
-        confirmation.open()
+            start_button = primary("开始作答", lambda: guarded(start), "edit_note")
 
-    def homework_answer_dialog(self, provider, account_id, work, questions):
+    def homework_answer_page(self, course, provider, account_id, work, questions):
         key = f"{account_id}:{work['id']}"
         draft = service.store.get("homework-drafts", key, {})
-        with ui.dialog() as dialog, ui.card().classes("w-[900px] p-7 gap-4"):
-            ui.label(work["name"]).classes("text-xl font-bold")
+        self.homework_heading(course, "作业作答", f"{course['name']} · {work['name']}", True)
+        with self.body:
             account = service.store.get("accounts", account_id)
             selected = (
                 ui.select({account_id: account["name"]}, value=[account_id], multiple=True, label="操作账号")
@@ -921,7 +1051,7 @@ class Dashboard:
                 with ui.column().classes("panel w-full gap-3") as panel:
                     panels.append(panel)
                     ui.label(f"第 {i + 1} 题").classes("font-semibold")
-                    rich(question["content"])
+                    homework_rich(question["content"], account_id, base=question["base_url"])
                     if not question["supported"]:
                         ui.label("此题型暂不支持，不能在本应用提交此作业。").classes("text-red-700")
                     elif typ in (0, 1, 3):
@@ -957,7 +1087,7 @@ class Dashboard:
                         if question.get("existing_media"):
                             with ui.expansion("平台已有的图片 / 附件").classes("w-full"):
                                 for media in question["existing_media"]:
-                                    rich(media)
+                                    homework_rich(media, account_id, base=question["base_url"])
                             keep_widgets[qid] = ui.checkbox(
                                 "保留平台已有的图片 / 附件", value=(draft.get("_keep_existing") or {}).get(qid, True)
                             )
@@ -1019,14 +1149,19 @@ class Dashboard:
                 if result and all(r["ok"] for r in result):
                     service.store.delete("homework-drafts", key)
                     submit_button.disable()
+                    ui.button("查看作答记录", on_click=lambda: self.homework_navigate(
+                        course, "review", work)).props("outline")
 
             with ui.row():
-                ui.button("关闭作答", on_click=dialog.close).props("flat")
+                def leave():
+                    service.store.put("homework-drafts", key, answers())
+                    self.homework_navigate(course)
+
+                ui.button("保存草稿并返回", on_click=leave).props("flat")
                 ui.button("保存本地草稿", on_click=save, icon="save").props("outline")
                 submit_button = primary("提交作业", lambda: guarded(submit), "send")
                 if any(not q["supported"] for q in questions):
                     submit_button.disable()
-        dialog.open()
 
     async def sign_dialog(self, course, active, group=False):
         detail = await self.provider().sign_detail(active["id"], group)
@@ -2098,3 +2233,56 @@ class Dashboard:
 @ui.page("/")
 def index(section: str = "courses", error: str = ""):
     Dashboard(section=section, settings_error=error).build()
+
+
+async def render_homework_route(account, course, class_id, work_id="", mode=""):
+    dashboard = Dashboard()
+    # Resolve page context from the account's cached courses, never from arbitrary URLs.
+    accounts = {item["id"]: item for item in service.accounts("chaoxing")}
+    dashboard.platform = "chaoxing"
+    dashboard.account_id = account if account in accounts else ""
+    if account in accounts:
+        app.storage.user["platform"] = "chaoxing"
+        app.storage.user["account_id"] = account
+    dashboard.build(render=False)
+    with dashboard.body:
+        try:
+            if account not in accounts:
+                raise ProviderError("作业账号不存在，请返回课程重新选择账号")
+            selected = next((item for item in service.store.get("courses", account, [])
+                             if str(item["courseId"]) == course and str(item["classId"]) == class_id), None)
+            if selected is None:
+                raise ProviderError("课程不存在，请返回课程刷新列表")
+            if not mode:
+                await dashboard.homework_list_page(selected)
+                return
+            generation = dashboard.live_generation
+            provider = dashboard.provider()
+            works = await provider.homework_list(selected)
+            if generation != dashboard.live_generation:
+                return
+            work = next((item for item in works if str(item["id"]) == work_id), None)
+            if work is None:
+                raise ProviderError("作业不存在，请返回课程作业刷新列表")
+            if mode == "review":
+                await dashboard.homework_review_page(selected, work)
+            else:
+                dashboard.homework_start_page(selected, provider, account, work)
+        except Exception as exc:
+            dashboard.empty("error_outline", "无法打开课程作业", str(exc))
+            ui.button("返回课程", on_click=lambda: ui.navigate.to("/")).props("flat")
+
+
+@ui.page("/homework")
+async def homework_page(account: str, course: str, class_id: str):
+    await render_homework_route(account, course, class_id)
+
+
+@ui.page("/homework/review")
+async def homework_review_page(account: str, course: str, class_id: str, work_id: str):
+    await render_homework_route(account, course, class_id, work_id, "review")
+
+
+@ui.page("/homework/answer")
+async def homework_answer_page(account: str, course: str, class_id: str, work_id: str):
+    await render_homework_route(account, course, class_id, work_id, "answer")

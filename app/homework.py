@@ -83,6 +83,11 @@ def parse_list(html, base=HOST):
                 "name": title.get_text(" ", strip=True) if title else node.get("aria-label", "作业"),
                 "status": status.get_text(" ", strip=True) if status else "待查看",
                 "url": url,
+                "details": list(dict.fromkeys(
+                    line for line in node.stripped_strings
+                    if line not in {title.get_text(" ", strip=True) if title else "",
+                                    status.get_text(" ", strip=True) if status else ""}
+                )),
             }
         )
     if not result and not soup.select_one(".task-list, .bottomList, .no-data, .nullMain"):
@@ -101,7 +106,17 @@ def review(html, base=HOST):
     title = soup.select_one(".mark_name, .detailsHead h2, .detailsHead .tit")
     if not questions:
         raise ProviderError("此作业未开放作答记录或页面结构已变化")
-    return {"title": title.get_text(" ", strip=True) if title else "作业详情", "questions": [str(q) for q in questions]}
+    title_text = title.get_text(" ", strip=True) if title else "作业详情"
+    heading = soup.select_one(".detailsHead")
+    details = []
+    if heading:
+        # Limit metadata to the platform's visible heading, excluding question content and hidden controls.
+        for node in heading.select("script, style, input, .mark_title, h2, .tit, [hidden]"):
+            node.decompose()
+        summary = " ".join(heading.stripped_strings)
+        details = [summary] if summary else []
+    return {"title": title_text,
+            "questions": [str(q) for q in questions], "details": details}
 
 
 def parse_form(html, base, partial=False):
@@ -174,6 +189,11 @@ def parse_form(html, base, partial=False):
             or slots
         )
         content = str(title)
+        # Text-only control labels cannot represent an image-based choice.
+        if typ in (0, 1, 3):
+            choices = node.select('.stem_answer, .mark_letter')
+            if choices and any(choice.select_one('img') for choice in choices):
+                content += ''.join(str(choice) for choice in choices)
         if typ in (11, 13):
             stem = node.select_one(".stem_answer, .matching")
             if stem:
@@ -186,6 +206,7 @@ def parse_form(html, base, partial=False):
                 "id": str(qid),
                 "type": typ,
                 "content": content,
+                "base_url": base,
                 "options": options,
                 "editors": editors,
                 "supported": supported,
