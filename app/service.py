@@ -7,6 +7,7 @@ from .im_service import MessageService
 from .providers.base import ProviderError
 from .providers.chaoxing import Chaoxing
 from .providers.rain import Rain
+from .sign_code import validate_generator
 from .store import Store
 
 DATA_DIR = Path(os.environ.get("COURSE_HELPER_DATA", Path(__file__).resolve().parents[1] / "data"))
@@ -69,6 +70,8 @@ class Service:
         return self.store.get("settings", self.setting_key(account_id, course), {})
 
     def save_settings(self, account_id, course, value):
+        if "signCodeGenerator" in value:
+            value = {**value, "signCodeGenerator": validate_generator(value["signCodeGenerator"])}
         location = value.get("location")
         if location:
             try:

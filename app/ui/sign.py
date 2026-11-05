@@ -6,6 +6,7 @@ from nicegui import ui
 
 from ..providers.base import ProviderError
 from ..service import service
+from ..sign_code import generate_sign_code
 from .components import field, guarded, primary
 from .constants import SIGN_TYPES
 
@@ -28,6 +29,25 @@ class SignView:
                 .classes("w-full")
             )
             code = field("签到码 / 手势序列（九宫格 1–9）")
+            with ui.column().classes("w-full gap-1") as code_generator:
+                generator = settings.get("signCodeGenerator") or {}
+
+                def generate():
+                    try:
+                        value, current = generate_sign_code(generator)
+                        code.value = value
+                        generated_at.set_text(f"生成时间：{current:%Y-%m-%d %H:%M:%S %Z}；可修改，检查后再提交。")
+                    except ProviderError as exc:
+                        ui.notify(str(exc), type="negative")
+
+                if generator.get("mode") == "date":
+                    ui.button("生成签到码", icon="event", on_click=generate).props("outline dense")
+                    ui.label(f"日期模板：{generator.get('template', '')} · {generator.get('timezone', '')}").classes(
+                        "muted text-xs"
+                    )
+                else:
+                    ui.label("可在课程设置 → 签到码生成中启用日期时间模板。").classes("muted text-xs")
+                generated_at = ui.label().classes("muted text-xs")
             with ui.expansion("绘制九宫格手势", icon="gesture").classes("w-full") as gesture:
                 points = []
                 pattern_label = ui.label("尚未选择")
@@ -99,6 +119,7 @@ class SignView:
             def update_sign_fields():
                 code.set_visibility(kind.value in ("3", "5"))
                 code.set_label("手势序列（九宫格 1–9）" if kind.value == "3" else "签到码")
+                code_generator.set_visibility(kind.value == "5" and not group)
                 gesture.set_visibility(kind.value == "3")
                 qr_value.set_visibility(kind.value == "2")
                 scan.set_visibility(kind.value == "2")

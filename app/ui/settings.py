@@ -7,6 +7,7 @@ from nicegui import ui
 from ..auth import CSRF_COOKIE
 from ..providers.base import ProviderError
 from ..service import service
+from ..sign_code import DEFAULT_TEMPLATE, DEFAULT_TIMEZONE, generate_sign_code
 from .components import field, guarded, primary
 
 
@@ -152,7 +153,7 @@ class SettingsView:
     def settings_dialog(self, course):
         settings = service.settings(self.account_id, course)
         images = list(settings.get("imageObjectIds") or [])
-        with ui.dialog() as dialog, ui.card().classes("w-[600px] p-7 gap-4"):
+        with ui.dialog() as dialog, ui.card().classes("w-[600px] max-w-full p-7 gap-4"):
             ui.label("课程设置").classes("text-xl font-bold")
             ui.label(course["name"]).classes("muted text-sm")
             location = self.location_fields(settings.get("location"))
@@ -194,9 +195,74 @@ class SettingsView:
                 "accept=image/* max-file-size=20971520"
             ).classes("w-full")
 
+            ui.separator()
+            ui.label("签到码生成").classes("section-title")
+            generator = settings.get("signCodeGenerator") or {}
+            mode = (
+                ui.select(
+                    {"disabled": "不启用", "date": "日期时间模板"},
+                    value=generator.get("mode", "disabled"),
+                    label="生成方式",
+                )
+                .props("outlined dense")
+                .classes("w-full")
+            )
+            template = field("格式模板", generator.get("template", DEFAULT_TEMPLATE))
+            timezone = field("时区（IANA 名称）", generator.get("timezone", DEFAULT_TIMEZONE))
+            preview = ui.label().classes("text-sm break-all")
+
+            def generator_config():
+                return {"mode": mode.value, "template": template.value, "timezone": timezone.value}
+
+            def update_preview():
+                enabled = mode.value == "date"
+                template.set_enabled(enabled)
+                timezone.set_enabled(enabled)
+                if not enabled:
+                    preview.set_text("未启用：签到时手动填写签到码。")
+                    return
+                try:
+                    value, current = generate_sign_code(generator_config())
+                    preview.set_text(f"实时预览：{value} · {current:%Y-%m-%d %H:%M:%S}（{timezone.value}）")
+                except ProviderError as exc:
+                    preview.set_text(f"模板提示：{exc}")
+
+            for control in (mode, template, timezone):
+                control.on_value_change(update_preview)
+            preview_timer = ui.timer(1, update_preview, active=False)
+            dialog.on_value_change(lambda e: setattr(preview_timer, "active", e.value))
+            update_preview()
+            with ui.expansion("使用方法", icon="help_outline", value=True).classes("w-full"):
+                ui.label("1. 选择“日期时间模板”，填写模板和时区，然后保存设置。").classes("text-sm")
+                ui.label("2. 在“签到码签到”窗口点击“生成签到码”，检查或修改后再提交。").classes("text-sm")
+                ui.label("支持占位符（区分大小写，均补零）：").classes("text-sm")
+                ui.label(
+                    "{YYYY} 四位年份；{YY} 两位年份；{MM} 月份；{DD} 日期；{HH} 小时（24 小时制）；{mm} 分钟。"
+                ).classes("text-sm")
+                ui.label(
+                    "示例：2026 年 11 月 5 日，{YY}{MM}{DD} → 261105，{MM}{DD} → 1105，88{MM}{DD} → 881105。"
+                ).classes("text-sm")
+                ui.label(
+                    "模板仅支持数字和上述占位符，最多 128 个字符，结果为 1–32 位数字并保留前导零。"
+                    "时区默认 Asia/Shanghai（北京时间），也可填 UTC 等 IANA 时区。"
+                ).classes("muted text-xs")
+                ui.label(
+                    "以点击生成时的时间为准；预览不会自动填入或提交签到码。生成结果仍需通过平台校验。"
+                    "同一平台、服务器、课程及班级下的账号共用此设置。"
+                ).classes("muted text-xs")
+
             def save():
                 try:
-                    service.save_settings(self.account_id, course, {"location": location(), "imageObjectIds": images})
+                    service.save_settings(
+                        self.account_id,
+                        course,
+                        {
+                            **settings,
+                            "location": location(),
+                            "imageObjectIds": images,
+                            "signCodeGenerator": generator_config(),
+                        },
+                    )
                     dialog.close()
                     ui.notify("设置已保存", type="positive")
                 except Exception as exc:
