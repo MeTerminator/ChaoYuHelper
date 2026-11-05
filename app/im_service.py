@@ -79,8 +79,13 @@ class MessageService:
         state = self.connections.get(account_id)
         if not state:
             return {"status": "未连接", "connected": False, "user_id": "", "sequence": 0, "events": []}
-        return {"status": state.status, "connected": state.connected, "user_id": state.user_id,
-                "sequence": state.sequence, "events": [e for seq, e in state.events if seq > after]}
+        return {
+            "status": state.status,
+            "connected": state.connected,
+            "user_id": state.user_id,
+            "sequence": state.sequence,
+            "events": [e for seq, e in state.events if seq > after],
+        }
 
     def _status(self, state, value, connected=False):
         state.status = value
@@ -108,18 +113,27 @@ class MessageService:
                 state.access_token = credentials["accessToken"]
                 browser = await self._browser()
                 context = await browser.new_context(
-                    storage_state=self.service.store.get("im-browser", account_id, None))
+                    storage_state=self.service.store.get("im-browser", account_id, None)
+                )
                 page = await context.new_page()
                 state.page = page
                 # An isolated synthetic origin gives the SDK persistent device storage without
                 # visiting an external page or exposing an unauthenticated application route.
-                await page.route(ORIGIN, lambda route: route.fulfill(
-                    status=200, content_type="text/html", body="<!doctype html><title>IM worker</title>"))
+                await page.route(
+                    ORIGIN,
+                    lambda route: route.fulfill(
+                        status=200, content_type="text/html", body="<!doctype html><title>IM worker</title>"
+                    ),
+                )
                 await page.goto(ORIGIN)
                 await page.expose_function("emitEvent", lambda name, data: self._event(account_id, state, name, data))
                 await page.add_script_tag(path=str(SDK_PATH))
-                result = await asyncio.wait_for(page.evaluate(
-                    "account => window.courseIM.connect(account)", {**credentials, "accountId": account_id}), 40)
+                result = await asyncio.wait_for(
+                    page.evaluate(
+                        "account => window.courseIM.connect(account)", {**credentials, "accountId": account_id}
+                    ),
+                    40,
+                )
                 if result.get("error"):
                     raise ProviderError(result["error"])
                 self.service.store.put("im-browser", account_id, await context.storage_state())
@@ -136,8 +150,9 @@ class MessageService:
                     # Refresh credentials before expiry without interrupting the shared socket.
                     if status.get("tokenExpiring"):
                         credentials = await self.service.provider(account_id).im_session()
-                        result = await asyncio.wait_for(page.evaluate(
-                            "token => window.courseIM.renewToken(token)", credentials["accessToken"]), 30)
+                        result = await asyncio.wait_for(
+                            page.evaluate("token => window.courseIM.renewToken(token)", credentials["accessToken"]), 30
+                        )
                         if result.get("error"):
                             raise ProviderError(result["error"])
                         state.access_token = credentials["accessToken"]
@@ -145,7 +160,11 @@ class MessageService:
                 raise
             except Exception as exc:
                 # SDK/provider errors are user-facing; browser exceptions can contain credentials.
-                detail = str(exc) if isinstance(exc, ProviderError) else "连接运行环境异常，请检查网络或执行 uv run playwright install chromium"
+                detail = (
+                    str(exc)
+                    if isinstance(exc, ProviderError)
+                    else "连接运行环境异常，请检查网络或执行 uv run playwright install chromium"
+                )
                 self._status(state, f"{detail}；{delay} 秒后自动重连")
                 state.attempted.set()
             finally:
@@ -157,8 +176,9 @@ class MessageService:
                 state.page = None
                 if context:
                     with suppress(Exception):
-                        self.service.store.put("im-browser", account_id,
-                                               await asyncio.wait_for(context.storage_state(), 5))
+                        self.service.store.put(
+                            "im-browser", account_id, await asyncio.wait_for(context.storage_state(), 5)
+                        )
                     with suppress(Exception):
                         await asyncio.wait_for(page.evaluate("window.courseIM?.close()"), 3)
                     with suppress(Exception):
@@ -186,15 +206,21 @@ class MessageService:
         key = message_session(message, user_id)
         if visible_message(message) and key:
             mid = str(message.get("serverMsgId") or message.get("id") or message.get("mid") or uuid4().hex)
-            store.put("im-messages", f"{account_id}:{key}:{mid}",
-                      {"account_id": account_id, "message": message, "session": key})
+            store.put(
+                "im-messages",
+                f"{account_id}:{key}:{mid}",
+                {"account_id": account_id, "message": message, "session": key},
+            )
             kind, target = key.split(":", 1)
             record = store.get("im-conversations", f"{account_id}:{key}", {})
             conversation = record.get("conversation") or {"id": target, "chatType": kind}
             if message_time(message) >= message_time(conversation.get("lastMessage") or {}):
                 conversation["lastMessage"] = message
-            store.put("im-conversations", f"{account_id}:{key}",
-                      {"account_id": account_id, "key": key, "conversation": conversation})
+            store.put(
+                "im-conversations",
+                f"{account_id}:{key}",
+                {"account_id": account_id, "key": key, "conversation": conversation},
+            )
         self.service.im_images.register_message(account_id, message)
         self.service.im_images.schedule(account_id, message_images(message))
         event = control_update(message, user_id)
@@ -222,32 +248,41 @@ class MessageService:
                 if key:
                     conversations[key] = key.split(":", 1)
         await images.prefetch(account_id, urls)
-        results = await asyncio.gather(self.call(account_id, "conversations"), self.call(account_id, "groups"),
-                                       return_exceptions=True)
+        results = await asyncio.gather(
+            self.call(account_id, "conversations"), self.call(account_id, "groups"), return_exceptions=True
+        )
         for index, result in enumerate(results):
             if isinstance(result, Exception):
                 continue
             urls = []
             for item in result.get("data", []):
                 kind = "groupChat" if index == 1 else item.get("conversationType") or item.get("chatType")
-                target = str(item.get("groupId") or item.get("groupid") or item.get("conversationId")
-                             or item.get("id") or "")
+                target = str(
+                    item.get("groupId") or item.get("groupid") or item.get("conversationId") or item.get("id") or ""
+                )
                 key = session_key(kind, target)
                 if key:
                     conversations[key] = (kind, target)
                 urls.extend(message_images(item.get("lastMessage") or {}))
             await images.prefetch(account_id, urls)
         provider = self.service.provider(account_id)
+
         async def profiles(users=(), groups=()):
             try:
                 result = await provider.im_profiles(users=users, groups=groups)
-                await images.prefetch(account_id, [url for profile in result.values() for url in profile_images(profile)])
+                await images.prefetch(
+                    account_id, [url for profile in result.values() for url in profile_images(profile)]
+                )
             except Exception:
                 # Avatar failures must not prevent preloading message images.
                 return
-        await profiles(users=[target for kind, target in conversations.values() if kind == "singleChat"],
-                       groups=[target for kind, target in conversations.values() if kind == "groupChat"])
+
+        await profiles(
+            users=[target for kind, target in conversations.values() if kind == "singleChat"],
+            groups=[target for kind, target in conversations.values() if kind == "groupChat"],
+        )
         limit = asyncio.Semaphore(2)
+
         async def history(kind, target):
             async with limit:
                 cursor, seen = -1, set()
@@ -274,6 +309,7 @@ class MessageService:
                     seen.add(str(next_cursor))
                     cursor = next_cursor
                     await asyncio.sleep(0.1)
+
         await asyncio.gather(*(history(*conversation) for conversation in conversations.values()))
 
     def _cache_control(self, account_id, event, message, user_id):
@@ -285,19 +321,28 @@ class MessageService:
         if kind == "local-read":
             store.put("im-read", prefix, max(store.get("im-read", prefix, 0), event["time"]))
         elif kind == "recall":
-            store.put("im-recalls", f"{prefix}:{event['mid']}",
-                      {"sender": event["sender"], "confirmed": message.get("type") == "recall"})
+            store.put(
+                "im-recalls",
+                f"{prefix}:{event['mid']}",
+                {"sender": event["sender"], "confirmed": message.get("type") == "recall"},
+            )
         else:
             if kind == "peer-read":
                 receipts = {event["mid"]: {"read": True}}
             elif kind == "group-read":
-                receipts = {str(mid): {"count": count} for mid, count in event["counts"].items()
-                            if isinstance(count, int) and count >= 0}
+                receipts = {
+                    str(mid): {"count": count}
+                    for mid, count in event["counts"].items()
+                    if isinstance(count, int) and count >= 0
+                }
             elif kind == "peer-channel":
-                receipts = {str(row["message"].get("serverMsgId") or row["message"].get("id") or ""): {"read": True}
-                            for row in store.all("im-messages").values()
-                            if row.get("account_id") == account_id and row.get("session") == key
-                            and str(row["message"].get("from") or "").split("/")[0] == user_id}
+                receipts = {
+                    str(row["message"].get("serverMsgId") or row["message"].get("id") or ""): {"read": True}
+                    for row in store.all("im-messages").values()
+                    if row.get("account_id") == account_id
+                    and row.get("session") == key
+                    and str(row["message"].get("from") or "").split("/")[0] == user_id
+                }
             else:
                 return
             for mid, receipt in receipts.items():
@@ -314,8 +359,9 @@ class MessageService:
         page = state.page
         if page is None:
             raise ProviderError("消息服务正在重连")
-        result = await asyncio.wait_for(page.evaluate(
-            "({method,args}) => window.courseIM[method](...args)", {"method": method, "args": args}), 60)
+        result = await asyncio.wait_for(
+            page.evaluate("({method,args}) => window.courseIM[method](...args)", {"method": method, "args": args}), 60
+        )
         if method == "sendText" and result.get("data"):
             self._event(account_id, state, "course-im-message", result["data"])
         return result

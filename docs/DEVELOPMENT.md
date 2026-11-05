@@ -7,16 +7,19 @@ main.py                    课程助手路由、启动参数与服务入口
 app/
   api.py                   Bearer Token 认证的 REST API
   auth.py                  管理员初始化、登录、凭据修改及 HTTP / WebSocket 访问控制
-  ui.py                    课程助手浏览器界面
+  ui/                      浏览器界面：路由、Dashboard 组合入口及业务视图
   service.py               账号会话、课程缓存、设置与批量操作
   im_service.py            后端共享环信连接、断线重连、历史图片预取与多网页分发
   im_media.py              消息图片与头像的同源缓存、鉴权及后台下载
   store.py                 SQLite + Fernet 加密存储
   activity.py              活动解析、参考答案、选人去重与课堂计时
-  homework.py              官方作业列表、作答记录、签名表单与提交报文解析
+  homework/                作业页面、签名表单、题目控件、附件与提交报文解析
   crypto.py                协议加密、签名和图片 CRC
   media.py                 PPT 图片格式识别
-  providers/               学习通、雨课堂 HTTP / WebSocket 协议
+  providers/
+    base.py                HTTP 会话、请求地址校验及公共错误
+    chaoxing/              学习通客户端及按业务划分的协议能力
+    rain.py                雨课堂 HTTP / WebSocket 协议
   static/                  样式、环信 SDK 源码与打包产物
 docs/                     使用、开发、API 与历史验证报告
 data/                     本地账号数据、密钥和 Token（不纳入版本控制）
@@ -24,6 +27,8 @@ data/                     本地账号数据、密钥和 Token（不纳入版本
 ```
 
 项目已从旧子目录迁移至根目录。所有启动命令在根目录执行，源码通过文件位置解析静态资源和默认数据目录。
+
+模块边界、依赖方向与新增功能的落点见 [架构与模块职责](ARCHITECTURE.md)。`app.ui`、`app.providers.chaoxing` 和 `app.homework` 保留原有导入入口，实际实现位于对应包内。
 
 ## 安装与检查
 
@@ -77,7 +82,7 @@ npm run build:im
 
 ## 后续扩展
 
-将新增业务放在 `app/service.py` 或独立服务模块，协议请求集中在 `app/providers/`。界面和 REST API 共用服务层。后续定时任务、AI 和无人值守流程尚未实现，增加这些能力时须单独设计启用条件、账号隔离和操作记录。
+新增跨入口的业务编排放在独立服务模块，`app/service.py` 负责账号、缓存、设置与服务生命周期；平台协议请求集中在 `app/providers/`。界面和 REST API 通过服务层获取平台能力；纯解析与校验放在领域模块。后续定时任务、AI 和无人值守流程尚未实现，增加这些能力时须单独设计启用条件、账号隔离和操作记录。
 
 ## 作业适配约束
 

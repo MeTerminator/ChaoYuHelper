@@ -18,17 +18,17 @@ Token 文件在首次启动时生成，权限为 `0600`。不要将 Token 放入
 from pathlib import Path
 import httpx
 
-token = Path('data/api-token').read_text().strip()
+token = Path("data/api-token").read_text().strip()
 with httpx.Client(
-    base_url='http://127.0.0.1:8080',
-    headers={'Authorization': f'Bearer {token}'},
+    base_url="http://127.0.0.1:8080",
+    headers={"Authorization": f"Bearer {token}"},
 ) as client:
-    accounts = client.get('/api/accounts').raise_for_status().json()
+    accounts = client.get("/api/accounts").raise_for_status().json()
     if accounts:
-        account_id = accounts[0]['id']
-        response = client.get(f'/api/accounts/{account_id}/courses')
+        account_id = accounts[0]["id"]
+        response = client.get(f"/api/accounts/{account_id}/courses")
         response.raise_for_status()
-        print('缓存课程数量：', len(response.json()))
+        print("缓存课程数量：", len(response.json()))
 ```
 
 ## 读取与本地设置

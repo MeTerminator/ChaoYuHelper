@@ -22,22 +22,24 @@ def valid_im_image(url):
 
 
 def profile_images(profile):
-    return [url for value in [profile.get('avatar'), *(profile.get('avatarPics') or [])]
-            if (url := media_url(value))]
+    return [url for value in [profile.get("avatar"), *(profile.get("avatarPics") or [])] if (url := media_url(value))]
 
 
 def message_images(message):
-    if message.get('type') != 'img':
+    if message.get("type") != "img":
         return []
-    body = message.get('body')
+    body = message.get("body")
     body = body if isinstance(body, dict) else {}
-    return [url for value in (message.get('url'), body.get('url'), message.get('thumb'), body.get('thumb'))
-            if (url := media_url(value))]
+    return [
+        url
+        for value in (message.get("url"), body.get("url"), message.get("thumb"), body.get("thumb"))
+        if (url := media_url(value))
+    ]
 
 
 class IMImages(HomeworkImages):
-    label = '消息'
-    route_path = '/media/im/image'
+    label = "消息"
+    route_path = "/media/im/image"
     max_cache = 256 * 1024 * 1024
     max_entries = 4096
     cache_ttl = 7 * 24 * 3600
@@ -50,7 +52,7 @@ class IMImages(HomeworkImages):
         self.clients = {}
         self.prefetch_slots = asyncio.Semaphore(2)
         self.failures = {}
-        super().__init__(service.store.path.parent / 'cache' / 'im')
+        super().__init__(service.store.path.parent / "cache" / "im")
 
     def link_deadline(self):
         # Stable URLs let all renders and pages reuse the browser's private cache.
@@ -58,21 +60,22 @@ class IMImages(HomeworkImages):
 
     def ready(self, account, url):
         digest = self.cache_name((account, url))
-        return any((entry := self.cache.get(f'{digest}.{extension}')) and entry[0] > time.time()
-                   for extension in FORMATS)
+        return any(
+            (entry := self.cache.get(f"{digest}.{extension}")) and entry[0] > time.time() for extension in FORMATS
+        )
 
     def register_message(self, account, message):
         if not message_images(message):
             return
-        body = message.get('body')
+        body = message.get("body")
         body = body if isinstance(body, dict) else {}
-        secret = message.get('secret') or body.get('secret')
+        secret = message.get("secret") or body.get("secret")
         if not isinstance(secret, str) or not secret:
             return
         for url in message_images(message):
             key = self.cache_name((account, url))
-            if self.service.store.get('im-image-auth', key) != secret:
-                self.service.store.put('im-image-auth', key, secret)
+            if self.service.store.get("im-image-auth", key) != secret:
+                self.service.store.put("im-image-auth", key, secret)
 
     def create_client(self):
         return httpx.AsyncClient(timeout=35, follow_redirects=False)
@@ -80,7 +83,7 @@ class IMImages(HomeworkImages):
     def request_client(self, provider):
         # Platform clients install a request guard which intentionally rejects Easemob.
         # Images have their own per-hop allowlist and an account-scoped HTTP session.
-        account = provider.account['id']
+        account = provider.account["id"]
         client = self.clients.get(account)
         if client is None or client.is_closed:
             client = self.clients[account] = self.create_client()
@@ -88,22 +91,22 @@ class IMImages(HomeworkImages):
         return client
 
     def request_headers(self, provider, url):
-        headers = {'Referer': 'https://im.chaoxing.com/'}
-        host = urlsplit(url).hostname or ''
-        state = self.service.im.connections.get(provider.account['id'])
+        headers = {"Referer": "https://im.chaoxing.com/"}
+        host = urlsplit(url).hostname or ""
+        state = self.service.im.connections.get(provider.account["id"])
         # Never send the IM bearer to avatars, arbitrary CDNs or redirect destinations.
-        if (host == 'easemob.com' or host.endswith('.easemob.com')) and state and state.access_token:
-            headers['Authorization'] = f'Bearer {state.access_token}'
-            headers['Accept'] = 'application/octet-stream'
-            secret = self.service.store.get('im-image-auth', self.cache_name((provider.account['id'], url)))
+        if (host == "easemob.com" or host.endswith(".easemob.com")) and state and state.access_token:
+            headers["Authorization"] = f"Bearer {state.access_token}"
+            headers["Accept"] = "application/octet-stream"
+            secret = self.service.store.get("im-image-auth", self.cache_name((provider.account["id"], url)))
             if secret:
-                headers['share-secret'] = secret
+                headers["share-secret"] = secret
         return headers
 
     async def prefetch(self, account, urls):
         urls = list(dict.fromkeys(url for url in urls if self.valid_url(url)))
         for offset in range(0, len(urls), 8):
-            await asyncio.gather(*(self._one(account, url) for url in urls[offset:offset + 8]))
+            await asyncio.gather(*(self._one(account, url) for url in urls[offset : offset + 8]))
 
     async def _one(self, account, url):
         key = (account, url)
@@ -125,10 +128,12 @@ class IMImages(HomeworkImages):
             if not self.valid_url(url) or self.ready(account, url) or key in self.jobs or len(self.jobs) >= 512:
                 continue
             task = self.jobs[key] = asyncio.create_task(self._one(account, url))
+
             def finished(done, key=key):
                 self.jobs.pop(key, None)
                 if not done.cancelled():
                     done.exception()
+
             task.add_done_callback(finished)
 
     async def remove(self, account):
