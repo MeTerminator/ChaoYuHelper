@@ -24,7 +24,7 @@ def cached_response(record):
     }
 
 
-async def load_summary(service, account_id):
+async def load_summary(service, account_id, *, refresh=False):
     provider = service.provider(account_id)
     if provider.platform != "chaoxing":
         raise ProviderError("我的作业目前支持学习通，请在顶部切换平台")
@@ -32,7 +32,20 @@ async def load_summary(service, account_id):
     lock = service.homework_locks.setdefault(account_id, asyncio.Lock())
     async with lock:
         record = service.store.get("homework-summary", account_id, {})
-        if record and time.time() < record.get("next_refresh", 0):
+        if not record and not refresh:
+            return {
+                "works": [],
+                "courses": [],
+                "errors": [],
+                "from_cache": True,
+                "cache_missing": True,
+                "retry_after": 0,
+                "checked_at": None,
+                "notice": "暂无作业缓存，请点击“刷新全部作业”加载。",
+            }
+        # Persisted snapshots remain valid for page entry regardless of age.
+        # Only an explicit refresh may fetch again, subject to platform cooldown.
+        if record and (not refresh or time.time() < record.get("next_refresh", 0)):
             return cached_response(record)
         previous = (record.get("summary") or {}).get("works", [])
         errors, works, seen = [], [], set()

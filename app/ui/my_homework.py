@@ -19,28 +19,34 @@ class MyHomeworkView:
         generation, account_id = self.live_generation, self.account_id
         with ui.row().classes("w-full items-center gap-3"):
             refresh = ui.button("刷新全部作业", icon="refresh")
-            progress = ui.label("正在读取课程与各科作业…").classes("muted text-sm")
+            progress = ui.label("正在读取作业缓存…").classes("muted text-sm")
         content = ui.column().classes("w-full gap-4")
         loading = False
 
-        async def load():
+        async def load(refresh_requested=False):
             nonlocal loading
             if loading or content.is_deleted or generation != self.live_generation:
                 return
             loading = True
             refresh.disable()
-            progress.set_text("正在读取课程与各科作业…")
+            progress.set_text("正在刷新课程与各科作业…" if refresh_requested else "正在读取作业缓存…")
             try:
-                summary = await load_summary(service, account_id)
+                summary = await load_summary(service, account_id, refresh=refresh_requested)
                 if content.is_deleted or generation != self.live_generation:
                     return
                 content.clear()
                 with content:
-                    self.draw_homework_summary(summary, on_verified=load)
-                if summary.get("verification_required"):
+                    self.draw_homework_summary(
+                        summary,
+                        on_verified=lambda: load(True),
+                        load_verification=refresh_requested or not summary.get("from_cache"),
+                    )
+                if summary.get("cache_missing"):
+                    message = "暂无作业缓存，请点击“刷新全部作业”加载"
+                elif summary.get("verification_required"):
                     message = "学习通要求验证码，请在下方输入后继续"
                 elif summary.get("from_cache"):
-                    message = "已显示缓存数据"
+                    message = "已显示数据库缓存，点击“刷新全部作业”更新"
                 else:
                     message = "部分课程读取失败" if summary["errors"] else "读取完成"
                 remaining = summary.get("retry_after", 0)
@@ -58,10 +64,10 @@ class MyHomeworkView:
                 if not refresh.is_deleted:
                     refresh.enable()
 
-        refresh.on_click(load)
+        refresh.on_click(lambda: load(True))
         ui.timer(0.01, load, once=True)
 
-    def draw_homework_summary(self, summary, on_verified=None):
+    def draw_homework_summary(self, summary, on_verified=None, load_verification=False):
         works, courses, errors = summary["works"], summary["courses"], summary["errors"]
         with ui.row().classes("w-full gap-4"):
             for label, value in [
@@ -76,7 +82,7 @@ class MyHomeworkView:
         if summary.get("notice"):
             ui.label(summary["notice"]).classes("text-amber-800 text-sm")
         if summary.get("verification_required") and on_verified:
-            render_access_verification(self, on_verified)
+            render_access_verification(self, on_verified, autoload=load_verification)
         if errors:
             with ui.expansion(f"{len(errors)} 门课程读取失败，当前汇总不完整", icon="warning").classes("panel w-full"):
                 for error in errors:
@@ -123,10 +129,16 @@ class MyHomeworkView:
                 if not visible:
                     self.empty(
                         "assignment",
-                        "暂无匹配作业" if works else "暂未读取到作业",
+                        "暂无作业缓存"
+                        if summary.get("cache_missing")
+                        else ("暂无匹配作业" if works else "暂未读取到作业"),
                         "可调整筛选条件或刷新全部作业。"
                         if works
-                        else ("请先处理上方课程读取错误后重试。" if errors else "当前账号的课程暂无作业。"),
+                        else (
+                            "点击“刷新全部作业”首次加载。"
+                            if summary.get("cache_missing")
+                            else ("请先处理上方课程读取错误后重试。" if errors else "当前账号的课程暂无作业。")
+                        ),
                     )
                     return
                 ui.label(f"共 {len(visible)} 项作业").classes("muted text-sm")

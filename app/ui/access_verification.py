@@ -6,7 +6,7 @@ from ..homework_summary import start_verification, submit_verification
 from ..service import service
 
 
-def render_access_verification(dashboard, on_verified):
+def render_access_verification(dashboard, on_verified, *, autoload=True):
     generation, account_id = dashboard.live_generation, dashboard.account_id
     state = {"token": "", "busy": False}
     with ui.column().classes("panel w-full gap-3") as panel:
@@ -21,7 +21,7 @@ def render_access_verification(dashboard, on_verified):
             .classes("w-64")
         )
         submit = ui.button("验证并继续", icon="verified_user").classes("primary-btn")
-        status = ui.label("正在加载验证码…").classes("muted text-sm")
+        status = ui.label("正在加载验证码…" if autoload else "点击“换一张”加载验证码").classes("muted text-sm")
 
     def active():
         return not panel.is_deleted and generation == dashboard.live_generation and account_id == dashboard.account_id
@@ -74,4 +74,5 @@ def render_access_verification(dashboard, on_verified):
     refresh.on_click(lambda: load(True))
     submit.on_click(verify)
     code.on("keydown.enter", verify)
-    ui.timer(0.01, load, once=True)
+    if autoload:
+        ui.timer(0.01, load, once=True)

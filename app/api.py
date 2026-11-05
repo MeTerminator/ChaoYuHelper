@@ -65,8 +65,8 @@ async def courses(account_id: str, refresh: bool = False):
 
 
 @router.get("/accounts/{account_id}/homework")
-async def all_homework(account_id: str):
-    return await load_summary(service, account_id)
+async def all_homework(account_id: str, refresh: bool = False):
+    return await load_summary(service, account_id, refresh=refresh)
 
 
 @router.post("/activities")
