@@ -6,6 +6,7 @@ from ...crypto import (
     md5,
 )
 from ..base import Provider
+from .access_verification import ChaoxingAccessVerification
 from .activities import ChaoxingActivities
 from .auth import ChaoxingAuth
 from .captcha import ChaoxingCaptcha
@@ -18,6 +19,7 @@ from .sign import ChaoxingSign
 
 class Chaoxing(
     ChaoxingAuth,
+    ChaoxingAccessVerification,
     ChaoxingMessaging,
     ChaoxingCourses,
     ChaoxingHomework,

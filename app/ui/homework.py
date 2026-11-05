@@ -20,7 +20,7 @@ class HomeworkView:
         self.homework_navigate(course)
 
     def homework_heading(self, course, title, subtitle, back_to_list=False):
-        items = [("我的课程", lambda: ui.navigate.to("/"))]
+        items = [("我的课程", lambda: ui.navigate.to("/")), ("我的作业", lambda: ui.navigate.to("/?section=homework"))]
         if back_to_list:
             items.append(("课程作业", lambda: self.homework_navigate(course)))
         items.append((title, None))
@@ -32,6 +32,9 @@ class HomeworkView:
                 icon="arrow_back",
                 on_click=(lambda: self.homework_navigate(course)) if back_to_list else (lambda: ui.navigate.to("/")),
             ).props("flat")
+            ui.button("我的作业汇总", icon="assignment", on_click=lambda: ui.navigate.to("/?section=homework")).props(
+                "flat"
+            )
             self.heading("COURSE HOMEWORK", title, subtitle)
 
     async def homework_list_page(self, course):

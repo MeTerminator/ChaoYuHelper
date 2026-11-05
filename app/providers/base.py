@@ -17,6 +17,10 @@ class ProviderError(Exception):
     pass
 
 
+class PlatformVerificationRequired(ProviderError):
+    """The platform requires an interactive verification; do not retry in a loop."""
+
+
 def checked(data):
     if not isinstance(data, dict):
         raise ProviderError("平台返回的数据格式不正确，请刷新或重新登录")

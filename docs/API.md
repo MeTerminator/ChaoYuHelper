@@ -38,6 +38,7 @@ with httpx.Client(
 | GET | `/health` | 返回 `status`、应用标识 |
 | GET | `/api/accounts` | 返回已保存账号的公开资料字段 |
 | GET | `/api/accounts/{account_id}/courses` | 默认 `refresh=false` 读取本地缓存；`refresh=true` 请求平台并更新缓存 |
+| GET | `/api/accounts/{account_id}/homework` | 读取学习通各科作业，返回 `works`（附 `course`）、`courses`、`errors`（含 `course` / `error`）；同账号共享 120 秒缓存，验证码触发后暂停 300 秒；另返回 `from_cache`、`retry_after`、`stale`、`verification_required`、`checked_at`、`notice`，失败课程保留上次数据并标记过期 |
 | POST | `/api/activities` | 学习通活动列表；请求 `account_id` 和课程信息 |
 | POST | `/api/homework` | 当前学习通账号的作业列表；参数同课程请求 |
 | POST | `/api/homework/review` | 已提交作业详情；课程请求另加 `work` 对象（列表返回值） |

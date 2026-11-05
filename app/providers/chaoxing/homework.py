@@ -21,6 +21,7 @@ class ChaoxingHomework:
             },
             raw=True,
         )
+        self.check_homework_verification(page, course)
         soup = document(page.text)
         fields = {n.get("id"): n.get("value", "") for n in soup.select("input[id]")}
         link = soup.select_one('a[data-url*="/work/list"]')
@@ -49,6 +50,7 @@ class ChaoxingHomework:
             visited.add(url)
             if len(visited) > 100:
                 raise ProviderError("作业列表分页超过 100 页，请缩小课程范围")
+            self.check_homework_verification(current, course)
             for work in parse_list(current.text, url):
                 result.setdefault(work["id"], work)
             for next_url in page_links(current.text, url):

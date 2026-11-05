@@ -19,6 +19,7 @@ class Service:
         self.store = store or Store(DATA_DIR)
         self.providers = {}
         self.locks = {}
+        self.homework_locks = {}
         self.auto_sign = AutoSign(self)
         self.im = MessageService(self)
         self.im_images = IMImages(self)
@@ -61,6 +62,7 @@ class Service:
         if provider:
             await provider.close()
         self.store.delete("courses", account_id)
+        self.store.delete("homework-summary", account_id)
 
     def setting_key(self, account_id, course):
         a = self.store.get("accounts", account_id)

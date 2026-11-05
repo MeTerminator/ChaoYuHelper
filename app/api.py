@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from .homework_summary import load_summary
 from .providers.base import ProviderError
 from .service import DATA_DIR, service
 
@@ -61,6 +62,11 @@ async def accounts():
 @router.get("/accounts/{account_id}/courses")
 async def courses(account_id: str, refresh: bool = False):
     return await service.courses(account_id, refresh)
+
+
+@router.get("/accounts/{account_id}/homework")
+async def all_homework(account_id: str):
+    return await load_summary(service, account_id)
 
 
 @router.post("/activities")

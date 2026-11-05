@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from ..providers.base import ProviderError
+from ..providers.base import PlatformVerificationRequired, ProviderError
 from .constants import ANSWER_PATHS, HOST, LIST_PATHS
 
 
@@ -52,6 +52,13 @@ def page_links(html, base, kind="list"):
 def document(html):
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(strip=True) if soup.title else ""
+    visible = soup.get_text(" ", strip=True)
+    if ("9010" in visible and "验证码" in visible) or (
+        title in ("提示页面", "验证页面") and "输入图片中的验证码" in visible
+    ):
+        raise PlatformVerificationRequired(
+            "学习通触发访问验证（9010），请在“我的作业”中输入图片验证码后继续；已暂停批量读取"
+        )
     if title in ("提示", "温馨提示") or soup.select_one('input[type="password"]'):
         raise ProviderError("作业页面无访问权限或会话已过期，请重新登录并刷新课程")
     return soup
