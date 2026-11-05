@@ -2,6 +2,8 @@ import asyncio
 import os
 from pathlib import Path
 
+from .im_media import IMImages
+from .im_service import MessageService
 from .providers.base import ProviderError
 from .providers.chaoxing import Chaoxing
 from .providers.rain import Rain
@@ -15,6 +17,8 @@ class Service:
         self.store = store or Store(DATA_DIR)
         self.providers = {}
         self.locks = {}
+        self.im = MessageService(self)
+        self.im_images = IMImages(self)
 
     def new_login(self, platform, server="yuketang"):
         return (Chaoxing if platform == "chaoxing" else Rain)(self.store, server=server)
@@ -46,10 +50,13 @@ class Service:
         }
 
     async def delete_account(self, account_id):
+        self.store.delete("accounts", account_id)
+        await self.im.remove(account_id)
+        await self.im_images.remove(account_id)
+        self.store.delete("im-browser", account_id)
         provider = self.providers.pop(account_id, None)
         if provider:
             await provider.close()
-        self.store.delete("accounts", account_id)
         self.store.delete("courses", account_id)
 
     def setting_key(self, account_id, course):
@@ -100,7 +107,12 @@ class Service:
 
         return await asyncio.gather(*(one(i) for i in dict.fromkeys(account_ids)))
 
+    async def start(self):
+        await self.im.start()
+
     async def close(self):
+        await self.im.close()
+        await self.im_images.close()
         await asyncio.gather(*(p.close() for p in self.providers.values()))
 
 

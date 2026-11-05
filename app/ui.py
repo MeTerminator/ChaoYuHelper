@@ -4,10 +4,8 @@ import asyncio
 import json
 import time
 from datetime import datetime
-from hashlib import sha256
 from html import escape
 from io import BytesIO
-from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from nicegui import app, background_tasks, ui
@@ -38,6 +36,7 @@ from .im import (
     time_label,
     visible_message,
 )
+from .im_media import message_images, profile_images
 from .media import image_extension
 from .providers.base import ProviderError
 from .providers.chaoxing import text
@@ -158,14 +157,13 @@ class Dashboard:
         ui.colors(primary="#317868", secondary="#748a85", positive="#317868")
         ui.dark_mode(value=None)
         ui.add_css((__import__("pathlib").Path(__file__).parent / "static/style.css").read_text())
-        im_version = sha256((Path(__file__).parent / "static/im.js").read_bytes()).hexdigest()[:12]
-        ui.add_head_html(f'<script src="/assets/im.js?v={im_version}"></script>')
         self.client.on_disconnect(self.stop_live)
-        async def incoming_im(event):
-            await self.handle_im(event.args)
-        ui.on("course-im-message", incoming_im)
-        ui.on("course-im-control", lambda e: self.apply_im_control(e.args))
-        ui.on("course-im-status", lambda e: self.handle_im_status(e.args))
+        self.im_event_account = None
+        self.im_event_sequence = 0
+        self.im_was_connected = False
+        self.im_connecting = None
+        self.im_polling = False
+        ui.timer(0.5, self.poll_im)
         self.nav_buttons = {}
         with (
             ui.left_drawer(value=None, top_corner=True, bottom_corner=True)
@@ -277,7 +275,6 @@ class Dashboard:
         self.im_status = "未连接"
         self.account_id, self.course, self.section = value or "", None, "courses"
         app.storage.user["account_id"] = self.account_id
-        await ui.run_javascript("window.courseIM?.close()")
         if self.client.request.url.path.startswith("/homework"):
             ui.navigate.to("/")
             return
@@ -513,14 +510,19 @@ class Dashboard:
 
             async def finish(account):
                 if account:
+                    await service.im.remove(account["id"])
+                    await service.im_images.remove(account["id"])
                     existing = service.providers.pop(account["id"], None)
+                    service.providers[account["id"]] = provider
+                    if provider.platform == "chaoxing":
+                        service.im.maintain(account["id"])
                     if existing:
                         await existing.close()
-                    service.providers[account["id"]] = provider
                     dialog.close()
                     self.account_id = account["id"]
                     app.storage.user["account_id"] = account["id"]
                     self.account_select.set_options(self.account_options(), value=account["id"])
+                    await self.change_account(account["id"])
                     self.navigate("accounts")
                     ui.notify("账号已添加", type="positive")
 
@@ -1217,12 +1219,12 @@ class Dashboard:
             ui.label("提交后将显示每个账号的结果；验证码和人脸参数按账号分别处理。").classes("muted text-xs")
             selected = self.selected_accounts()
             kind = (
-                ui.select(SIGN_TYPES, value=active.get("signType", "0"), label="签到方式")
+                ui.select(SIGN_TYPES, value=str(active.get("signType", "0")), label="签到方式")
                 .props("outlined dense")
                 .classes("w-full")
             )
             code = field("签到码 / 手势序列（九宫格 1–9）")
-            with ui.expansion("绘制九宫格手势", icon="gesture").classes("w-full"):
+            with ui.expansion("绘制九宫格手势", icon="gesture").classes("w-full") as gesture:
                 points = []
                 pattern_label = ui.label("尚未选择")
 
@@ -1243,7 +1245,7 @@ class Dashboard:
 
                 ui.button("重置", on_click=clear_pattern).props("flat dense")
             qr_value = field("二维码内容 / enc", active.get("_qr", ""))
-            ui.button(
+            scan = ui.button(
                 "相机扫码",
                 icon="qr_code_scanner",
                 on_click=lambda: self.camera_dialog(lambda value: setattr(qr_value, "value", value)),
@@ -1259,7 +1261,7 @@ class Dashboard:
                 .classes("w-full")
             )
             per_account_photos = {}
-            with ui.expansion("分别设置各账号的照片", icon="collections").classes("w-full"):
+            with ui.expansion("分别设置各账号的照片", icon="collections").classes("w-full") as account_photos:
                 for account_id, label in self.account_options().items():
                     per_account_photos[account_id] = (
                         ui.select(
@@ -1279,12 +1281,27 @@ class Dashboard:
 
                 await guarded(work)
 
-            ui.upload(label="拍照 / 选择签到照片", on_upload=upload, auto_upload=True).props(
+            photo_upload = ui.upload(label="拍照 / 选择签到照片", on_upload=upload, auto_upload=True).props(
                 "accept=image/* max-file-size=20971520"
             ).classes("w-full")
-            with ui.expansion("位置信息", icon="location_on", value=kind.value == "4").classes("w-full"):
+            with ui.expansion("位置信息", icon="location_on", value=True).classes("w-full") as location:
                 collect_location = self.location_fields(settings.get("location"))
             use_face = ui.checkbox("使用账号已采集的人脸进行校验", value=info.get("openCheckFaceFlag") == 1)
+            needs_photo = info.get("ifPhoto", info.get("ifphoto")) == 1
+            use_face.set_visibility(info.get("openCheckFaceFlag") == 1)
+
+            def update_sign_fields():
+                code.set_visibility(kind.value in ("3", "5"))
+                code.set_label("手势序列（九宫格 1–9）" if kind.value == "3" else "签到码")
+                gesture.set_visibility(kind.value == "3")
+                qr_value.set_visibility(kind.value == "2")
+                scan.set_visibility(kind.value == "2")
+                for control in (photo, account_photos, photo_upload):
+                    control.set_visibility(needs_photo)
+                location.set_visibility(kind.value == "4")
+
+            kind.on_value_change(update_sign_fields)
+            update_sign_fields()
             with ui.expansion("签到详情 / 参与列表").classes("w-full"):
                 ui.label(
                     "签到方式：" + SIGN_TYPES.get(str(info.get("otherId", active.get("signType", "0"))), "由平台指定")
@@ -1345,8 +1362,8 @@ class Dashboard:
             results = ui.column().classes("w-full")
 
             async def submit():
-                loc = collect_location() or {}
-                raw = qr_value.value or ""
+                loc = (collect_location() or {}) if kind.value == "4" else {}
+                raw = (qr_value.value or "") if kind.value == "2" else ""
                 query = parse_qs(urlparse(raw).query)
                 enc = query.get("enc", [raw])[0]
 
@@ -1359,9 +1376,11 @@ class Dashboard:
                         if not validation:
                             raise ProviderError("已取消验证码验证")
                     params = dict(
-                        code=code.value or "",
+                        code=(code.value or "") if kind.value in ("3", "5") else "",
                         enc=enc,
-                        object_id=per_account_photos.get(provider.account.get("id"), photo).value or photo.value or "",
+                        object_id=(
+                            per_account_photos.get(provider.account.get("id"), photo).value or photo.value or ""
+                        ) if needs_photo else "",
                         address=loc.get("address", ""),
                         latitude=loc.get("latitude"),
                         longitude=loc.get("longitude"),
@@ -2160,12 +2179,10 @@ class Dashboard:
                 ui.label("消息").classes("page-title")
                 self.im_status_label = ui.label(self.im_status).classes("im-status")
             with ui.row().classes("items-center gap-2"):
-                primary("连接消息服务", lambda: guarded(self.connect_im), "sensors")
                 ui.button("刷新会话", icon="refresh", on_click=lambda: guarded(self.load_groups)).props("flat")
                 ui.button("发起私聊", icon="person_add_alt", on_click=self.im_private_dialog).props("flat")
                 with ui.button(icon="more_horiz").props('flat round aria-label="消息选项"'):
                     with ui.menu():
-                        ui.menu_item("断开消息服务", on_click=self.disconnect_im)
                         ui.menu_item("启用桌面通知", on_click=lambda: ui.run_javascript("Notification.requestPermission()"))
                         ui.menu_item("通过活动 ID 打开签到", on_click=self.im_activity_dialog)
         with ui.element("div").classes("im-workspace"):
@@ -2188,6 +2205,7 @@ class Dashboard:
         self.render_im_groups()
         self.render_im_chat()
         self.render_im_composer()
+        ui.timer(0.1, lambda: guarded(self.connect_im), once=True)
 
     def im_self_id(self):
         return self.im_user_id or str(self.provider().account.get("imAccount", {}).get("userName") or "")
@@ -2215,6 +2233,7 @@ class Dashboard:
             return
         key = session_key("singleChat", user_id)
         self.im_profiles.update(profiles)
+        service.im_images.schedule(self.account_id, [url for profile in profiles.values() for url in profile_images(profile)])
         self.im_groups.setdefault(key, {"id": user_id, "chatType": "singleChat"})
         self.im_groups[key].update(profiles.get(key, {}))
         self.save_im_conversations()
@@ -2259,13 +2278,13 @@ class Dashboard:
         if len(content.encode("utf-8")) > 5000:
             raise ProviderError("消息不能超过 5000 字节")
         conversation = self.im_groups[key]
-        args = json.dumps({"accountId": account_id, "targetId": conversation["id"],
-                           "chatType": conversation["chatType"], "text": content})
+        args = {"accountId": account_id, "targetId": conversation["id"],
+                "chatType": conversation["chatType"], "text": content}
         self.im_sending = True
         self.im_send_button.disable()
         try:
             try:
-                result = await ui.run_javascript(f"return await window.courseIM.sendText({args})", timeout=60)
+                result = await service.im.call(account_id, "sendText", args)
             except Exception as exc:
                 raise ProviderError("发送结果未确认，请查看会话后再决定是否重发；草稿已保留。") from exc
             if account_id != self.account_id:
@@ -2316,29 +2335,57 @@ class Dashboard:
         if "错误" in self.im_status:
             ui.notify(self.im_status, type="negative")
 
-    async def disconnect_im(self):
-        await ui.run_javascript("window.courseIM.close()")
-        self.handle_im_status({"status": "未连接"})
+    async def poll_im(self):
+        if self.im_polling or not self.account_id or self.platform != "chaoxing":
+            return
+        self.im_polling = True
+        try:
+            account_id = self.account_id
+            if self.im_event_account != account_id:
+                self.im_event_account = account_id
+                self.im_event_sequence = service.im.snapshot(account_id)["sequence"]
+                self.im_was_connected = False
+            snapshot = service.im.snapshot(account_id, self.im_event_sequence)
+            self.im_event_sequence = snapshot["sequence"]
+            self.im_user_id = snapshot["user_id"]
+            if snapshot["status"] != self.im_status:
+                self.handle_im_status({"status": snapshot["status"]})
+            reconnected = snapshot["connected"] and not self.im_was_connected
+            self.im_was_connected = snapshot["connected"]
+            for event in snapshot["events"]:
+                if account_id != self.account_id:
+                    return
+                if event["name"] == "course-im-control":
+                    self.apply_im_control(event["message"])
+                else:
+                    await self.handle_im(event["message"])
+            if reconnected and self.section == "groups" and self.im_connecting != account_id:
+                await guarded(self.connect_im)
+        finally:
+            self.im_polling = False
 
     async def connect_im(self):
         account_id = self.account_id
-        im = await self.provider().im_session()
-        if account_id != self.account_id or self.section != "groups":
+        if self.section != "groups" or self.platform != "chaoxing" or not account_id:
             return
-        self.im_user_id = im["userName"]
-        args = json.dumps({**im, "accountId": account_id})
-        result = await ui.run_javascript(f"return await window.courseIM.connect({args})", timeout=40)
-        if account_id != self.account_id or self.section != "groups":
+        if self.im_connecting == account_id:
             return
-        if result.get("error"):
-            raise ProviderError(result["error"])
-        self.handle_im_status({"status": "消息服务已连接"})
-        await self.load_groups()
+        self.im_connecting = account_id
+        try:
+            state = await service.im.ensure(account_id)
+            if account_id != self.account_id or self.section != "groups":
+                return
+            self.im_user_id = state.user_id
+            self.handle_im_status({"status": state.status})
+            await self.load_groups()
+        finally:
+            if self.im_connecting == account_id:
+                self.im_connecting = None
 
     async def load_groups(self):
         account_id = self.account_id
-        result, joined = await ui.run_javascript(
-            "return await Promise.all([window.courseIM.conversations(),window.courseIM.groups()])", timeout=60)
+        result, joined = await asyncio.gather(
+            service.im.call(account_id, "conversations"), service.im.call(account_id, "groups"))
         if account_id != self.account_id or self.section != "groups":
             return
         warnings = [r["error"] for r in (result, joined) if r.get("error")]
@@ -2372,6 +2419,7 @@ class Dashboard:
         if account_id != self.account_id or self.section != "groups":
             return
         self.im_profiles.update(profiles)
+        service.im_images.schedule(self.account_id, [url for profile in profiles.values() for url in profile_images(profile)])
         for key, profile in profiles.items():
             if key in self.im_groups:
                 conversation = self.im_groups[key]
@@ -2422,7 +2470,13 @@ class Dashboard:
         with avatar:
             if pictures:
                 for url in pictures:
-                    ui.image(url).props('no-spinner referrerpolicy="no-referrer"').classes("im-avatar-image")
+                    source = service.im_images.url(self.account_id, url)
+                    service.im_images.schedule(self.account_id, [url])
+                    image = ui.image(source).props(
+                        'no-spinner loading=eager decoding=async no-transition'
+                    ).classes("im-avatar-image")
+                    with image.add_slot("error"):
+                        ui.label(name[:1] if name and not name.isdigit() else "人").classes("absolute-center")
             else:
                 ui.label(name[:1] if name and not name.isdigit() else "群" if profile.get("chatType") == "groupChat" else "人")
 
@@ -2516,10 +2570,10 @@ class Dashboard:
         if changed or not hasattr(self, "im_input"):
             self.render_im_composer()
         conversation = self.im_groups[group_id]
-        args = json.dumps([conversation["id"], conversation["chatType"], page.get("cursor", -1) if older else -1])
+        args = [conversation["id"], conversation["chatType"], page.get("cursor", -1) if older else -1]
         self.im_pages.setdefault(group_id, {})["loading"] = True
         try:
-            result = await ui.run_javascript(f"return await window.courseIM.historyPage(...{args})", timeout=60)
+            result = await service.im.call(account_id, "historyPage", *args)
         finally:
             if account_id == self.account_id:
                 self.im_pages.setdefault(group_id, {})["loading"] = False
@@ -2539,6 +2593,7 @@ class Dashboard:
         if request != self.im_request or account_id != self.account_id or self.section != "groups":
             return
         self.im_profiles.update(profiles)
+        service.im_images.schedule(self.account_id, [url for profile in profiles.values() for url in profile_images(profile)])
         self.im_unread[group_id] = 0
         service.store.put("im-read", f"{account_id}:{group_id}", time.time())
         self.render_im_groups()
@@ -2637,6 +2692,7 @@ class Dashboard:
         if account_id != self.account_id:
             return
         self.im_profiles.update(profiles)
+        service.im_images.schedule(self.account_id, [url for profile in profiles.values() for url in profile_images(profile)])
         profile = profiles.get(key, {})
         if profile.get("name") != conversation["id"]:
             conversation.update(profile)
@@ -2647,6 +2703,10 @@ class Dashboard:
                 self.render_im_chat()
         if attachment_info(message):
             ui.notify("收到新的课堂活动", timeout=8000)
+            body = json.dumps(str(attachment_info(message).get("title") or "收到新的课堂活动"))
+            await ui.run_javascript(
+                "if ('Notification' in window && Notification.permission === 'granted') "
+                f"new Notification('课堂活动', {{body: {body}}})")
 
     def draw_im_message(self, message):
         if not visible_message(message):
@@ -2685,7 +2745,21 @@ class Dashboard:
                             ui.label("课堂活动").classes("text-xs font-semibold")
                     url = media_url(message.get("url") or (message.get("body") or {}).get("url"))
                     if message.get("type") == "img" and url:
-                        ui.image(url).props('no-spinner referrerpolicy="no-referrer"').classes("im-inline-image")
+                        source = service.im_images.url(self.account_id, url)
+                        service.im_images.register_message(self.account_id, message)
+                        service.im_images.schedule(self.account_id, message_images(message))
+                        size = message.get("size") or (message.get("body") or {}).get("size") or {}
+                        try:
+                            ratio = max(0.25, min(4, float(size.get("width", 4)) / float(size.get("height", 3))))
+                        except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+                            ratio = 4 / 3
+                        image = ui.image(source).props(
+                            f'no-spinner loading=eager decoding=async no-transition fit=contain ratio={ratio}'
+                        ).classes("im-inline-image")
+                        with image.add_slot("error"):
+                            with ui.column().classes("absolute-full flex-center gap-1"):
+                                ui.label("图片暂时无法加载").classes("text-xs")
+                                ui.button("重新加载", on_click=image.force_reload).props("flat dense size=sm")
                     elif message.get("type") in ("file", "audio", "video") and url:
                         ui.link(message.get("filename") or message_preview(message), url, new_tab=True).classes("im-file-link")
                     else:

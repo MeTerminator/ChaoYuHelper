@@ -9,6 +9,8 @@ app/
   auth.py                  管理员初始化、登录、凭据修改及 HTTP / WebSocket 访问控制
   ui.py                    课程助手浏览器界面
   service.py               账号会话、课程缓存、设置与批量操作
+  im_service.py            后端共享环信连接、断线重连、历史图片预取与多网页分发
+  im_media.py              消息图片与头像的同源缓存、鉴权及后台下载
   store.py                 SQLite + Fernet 加密存储
   activity.py              活动解析、参考答案、选人去重与课堂计时
   homework.py              官方作业列表、作答记录、签名表单与提交报文解析
@@ -37,7 +39,7 @@ node --check app/static/im.js
 
 ## 环信资源构建
 
-运行时使用已提交的 `app/static/im.js`，不需要 Node。修改 `app/static/im-source.js` 后再执行：
+运行时使用已提交的 `app/static/im.js`，不需要 Node。后端通过 Playwright 无头 Chromium 运行环信 SDK，首次部署执行 `uv run --locked playwright install chromium`（Linux 可使用 `install --with-deps chromium`）。一个服务进程共用浏览器，每个学习通账号使用独立上下文和连接，设备存储按账号加密保存于 Store。浏览器页面通过 NiceGUI 后端调用复用连接，不接收 IM Token，不创建环信连接。断线或 Chromium 异常后由后端重新获取凭据并按 2–60 秒退避持续重连；Token 即将过期时续期。服务关闭、删除账号或重新登录时会清理旧连接。修改 `app/static/im-source.js` 后再执行：
 
 ```bash
 npm ci
@@ -45,6 +47,14 @@ npm run build:im
 ```
 
 保留 `package.json`、`package-lock.json` 和构建产物中的许可说明；`node_modules/` 可清理。锁定的第三方版本和许可说明见根目录文档。
+
+### 消息图片缓存
+
+连接成功后在后台扫描本地消息、会话、群聊及其可访问的云端历史页，预取消息图片与头像，不发送已读回执、不自动发送消息。后台历史读取最多两路，图片预取最多两路，总下载最多四路，给当前网页请求保留下载空间。预取失败不会中断消息连接；新收到的图片、页面加载的历史和资料也会进入预取流程。
+
+图片通过需要管理员登录的 `/media/im/image` 签名接口返回，按账号与原地址合并并发下载，原始地址逐跳校验。消息图片使用独立、按账号隔离的 HTTP 客户端，复制平台 Cookie 的域限制，不复用只允许平台地址的请求检查钩子；账号删除、重新登录及服务关闭时一并清理。受限环信图片使用后端持有的 Token 和加密保存的文件密钥，重定向到其他 CDN 时不携带这两个头。接口返回私有浏览器缓存头，同一天生成的签名链接保持稳定；图片缓存会跨进程重启复用。缓存目录为 `data/cache/im/`，上限 256 MB / 4096 张、有效期 7 天、单张上限 8 MB。图片预取按可读取的历史范围进行，平台已过期或无权限的图片无法预取；容量不足时按缓存访问顺序淘汰。
+
+作业图片继续使用独立的原缓存目录、1 小时有效期与 64 MB / 512 张上限；共用下载去重和图片校验实现。消息图片与头像在网页中使用提前加载和异步解码，消息图片根据尺寸预留显示比例；失败时可点击“重新加载”。
 
 ## 真实账号联调
 
@@ -62,7 +72,7 @@ npm run build:im
 | 课程空白或账号消失 | 核对平台、雨课堂服务器和账号，手动刷新课程；平台接口可能要求重新登录 |
 | 新设备验证 / 验证码错误 | 在界面中由用户完成验证，或选择对应的短信 / 二维码登录；不要连续重试或绕过验证 |
 | `UNAUTHENTICATED` | 核查服务器、会话是否过期，以及保存的 Web / App 登录方式是否与 `x-client` 匹配 |
-| 消息服务登录设备数超限（214） | 先退出其他电脑、浏览器或旧版助手的消息会话，再连接；仅关闭页面可能需要等待服务端释放名额。本应用复用连接中的请求和当前已连接会话，可用“断开消息服务”主动退出；固定设备标识无法提高平台上限 |
+| 消息服务登录设备数超限（214） | 先退出其他电脑、浏览器或旧版助手的消息会话，再连接；仅关闭页面可能需要等待服务端释放名额。本应用所有网页复用后端按账号维护的连接；关闭网页不会退出消息服务，停止后端服务会释放连接。固定设备标识无法提高平台上限 |
 | 解密失败 | 确认数据库与 `.key` 来自同一次备份；不要替换或重新生成现有密钥 |
 
 ## 后续扩展
@@ -77,9 +87,9 @@ npm run build:im
 
 作业列表、详情结构来自官方真实只读页面；作答表单和提交协议参考现有表单约定及[公开实现源码](https://greasyfork.org/fr-CA/scripts/583231/code)，采用独立实现。手动作答仅用模拟 HTML / HTTP 验证，没有打开用户的未交作业。已补充签名分页合并、图片 / 文件附件、排序 / 连线内部值映射和多编辑器字段的模拟验证；不要把模拟覆盖描述为真实作业提交成功。排序与连线字段另参考[题目控件解析源码](https://github.com/iPycc/Fk-Chaoxing-Extension/blob/main/modules/question/parse/dropdown.js)，采用独立 Python 实现。
 
-IM 适配保留 `easemob-websdk@4.24.0` 的默认 Web 设备类型 `16`，从 `GET https://learn.chaoxing.com/apis/user/getUserImToken?crossOrigin=true` 的 `msg.uid` / `msg.hxToken` 获取登录凭证，再调用 `open({user, accessToken})`。登录前后均指定 `https://a3-vip6.easemob.com` 为 REST 地址，避免 DNS 发现覆盖。固定设备标识由 SDK 在浏览器本地保存。群聊带 `needAffiliations` 时从 `entities` 读取 `groupId/groupName`；历史消息按 `cursor/isLast` 向前分页。详见 [官方消息页核对记录](reports/2026-11-04-im-review.md)。
+IM 适配保留 `easemob-websdk@4.24.0` 的默认 Web 设备类型 `16`，从 `GET https://learn.chaoxing.com/apis/user/getUserImToken?crossOrigin=true` 的 `msg.uid` / `msg.hxToken` 获取登录凭证，再调用 `open({user, accessToken})`。登录前后均指定 `https://a3-vip6.easemob.com` 为 REST 地址，避免 DNS 发现覆盖。固定设备标识由 SDK 在后端隔离的浏览器上下文中生成，其存储状态按账号加密保存，重启与重连时恢复。群聊带 `needAffiliations` 时从 `entities` 读取 `groupId/groupName`；历史消息按 `cursor/isLast` 向前分页。详见 [官方消息页核对记录](reports/2026-11-04-im-review.md)。
 
-历史 IM 回归覆盖会话分页、群聊 / 私聊路由、历史游标、账号隔离、资料缓存和展示归一化；测试目录现已移除。实际只读验证见上述核对记录。IM 静态脚本以内容哈希作版本参数，防止浏览器加载旧脚本。
+历史 IM 回归覆盖会话分页、群聊 / 私聊路由、历史游标、账号隔离、资料缓存和展示归一化；测试目录现已移除。实际只读验证见上述核对记录。后端创建连接上下文时从本地读取已构建的 IM 脚本，不依赖网页的静态资源缓存。
 
 用户和群聊资料由 `im.chaoxing.com/webim/user/getUserInfoByTuid` 与 `/webim/huanxin/getGroupInfo` 读取，必须覆盖手机客户端默认请求头，使用网页的 `Accept: application/json, text/plain, */*` 等头；真实验证发现沿用手机头会得到 `text/plain;charset=ISO-8859-1`，中文名称已经在服务端退化为问号，无法仅靠客户端改编码恢复。
 

@@ -15,11 +15,14 @@ from app.ui import index  # noqa: F401
 app.title = "课程助手"
 app.include_router(router)
 app.include_router(homework_images.router(service))
+app.include_router(service.im_images.router(service))
 admin_auth = AdminAuth(service.store)
 app.include_router(create_auth_router(admin_auth))
 app.add_middleware(AdminMiddleware, auth=admin_auth)
 app.add_static_files("/assets", str(Path(__file__).parent / "app/static"))
+app.on_startup(service.start)
 app.on_shutdown(service.close)
+app.on_shutdown(homework_images.close)
 
 
 @app.exception_handler(ProviderError)

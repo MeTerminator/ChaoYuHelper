@@ -12,6 +12,7 @@ let connection;
 let activeAccount;
 let generation = 0;
 let pending;
+let tokenExpiring = false;
 window.courseIM = {
   connect(account) {
     if (activeAccount === account.accountId) {
@@ -30,8 +31,12 @@ window.courseIM = {
     try {
       if (connection) connection.close();
       activeAccount = account.accountId;
+      tokenExpiring = false;
       client = new SDK.connection({appKey:'cx-dev#cxstudy',apiUrl:REST_URL,https:true,
-        isHttpDNS:true,autoReconnectNumMax:3,isFixedDeviceId:true});
+        isHttpDNS:true,autoReconnectNumMax:0,isFixedDeviceId:true});
+      // This SDK version treats constructor value 0 as the default 5.
+      // The server owns reconnects, so disable internal retries explicitly.
+      client.autoReconnectNumMax = 0;
       // Keep the SDK's Web osType=16, matching the current official Web IM.
       // Let the SDK persist a device identifier for this browser.
       connection = client;
@@ -46,6 +51,8 @@ window.courseIM = {
         onReadMessage:m=>{if(current===generation)emit('course-im-control',{...m,type:'read',_account_id:account.accountId});},
         onChannelMessage:m=>{if(current===generation)emit('course-im-control',{...m,type:'channel',_account_id:account.accountId});},
         onRecallMessage:m=>{if(current===generation)emit('course-im-control',{...m,type:'recall',_account_id:account.accountId});},
+        onTokenWillExpire:()=>{tokenExpiring=true;},
+        onTokenExpired:()=>{tokenExpiring=true;},
         onError:e=>status('消息服务错误：'+error(e).error)
       });
       await client.open({user:account.userName,accessToken:account.accessToken});
@@ -75,7 +82,11 @@ window.courseIM = {
     if(activity && 'Notification' in window && Notification.permission==='granted')
       new Notification('课堂活动',{body:activity.title || '收到新的课堂活动'});
   },
-  status() {return {connected:!!connection?.isOpened(),deviceType:connection?.osType,accountId:activeAccount,userId:connection?.user};},
+  status() {return {tokenExpiring,connected:!!connection?.isOpened(),deviceType:connection?.osType,accountId:activeAccount,userId:connection?.user};},
+  async renewToken(token) {
+    try {await connection.renewToken(token);tokenExpiring=false;return {ok:true};}
+    catch(e) {return error(e);}
+  },
   close() {generation++;pending=undefined;activeAccount=undefined;if(connection){connection.close();connection=null;}},
   async groups() {
     if(!connection?.isOpened()) return {error:'请先连接消息服务'};

@@ -3,9 +3,9 @@ name = "course-helper"
 version = "0.1.0"
 description = "课程助手"
 requires-python = ">=3.11,<3.14"
-dependencies = ["nicegui>=3.0,<4", "httpx>=0.28,<1", "pycryptodome>=3.23,<4", "cryptography>=45", "beautifulsoup4>=4.13", "websockets>=15,<17", "qrcode[pil]>=8", "pillow>=11", "python-multipart>=0.0.20", "zxing-cpp>=2.3"]
+dependencies = ["nicegui>=3.0,<4", "httpx>=0.28,<1", "pycryptodome>=3.23,<4", "cryptography>=45", "beautifulsoup4>=4.13", "websockets>=15,<17", "qrcode[pil]>=8", "pillow>=11", "python-multipart>=0.0.20", "zxing-cpp>=2.3", "playwright>=1.55,<2"]
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=1", "playwright>=1.55", "ruff>=0.14"]
+dev = ["pytest>=8", "pytest-asyncio>=1", "ruff>=0.14"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
