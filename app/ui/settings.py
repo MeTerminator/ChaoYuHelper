@@ -157,6 +157,27 @@ class SettingsView:
             ui.label("课程设置").classes("text-xl font-bold")
             ui.label(course["name"]).classes("muted text-sm")
             location = self.location_fields(settings.get("location"))
+            auto_location = ui.switch("位置签到自动提交", value=settings.get("autoLocationSign", False))
+            ui.label(
+                "开启后，服务端收到学习通课程位置签到消息，将使用此处保存的位置自动提交。请先填写完整位置。"
+            ).classes("muted text-xs")
+            ui.label("签到随机提交延迟").classes("section-title")
+            delay = settings.get("signDelay") or {}
+            with ui.row().classes("w-full no-wrap"):
+                delay_min = (
+                    ui.number("最小延迟（秒）", value=delay.get("min", 1), min=0, max=3600, precision=2)
+                    .props("outlined dense")
+                    .classes("w-1/2")
+                )
+                delay_max = (
+                    ui.number("最大延迟（秒）", value=delay.get("max", 3), min=0, max=3600, precision=2)
+                    .props("outlined dense")
+                    .classes("w-1/2")
+                )
+            ui.label(
+                "每个账号每次自动签到独立随机等待，默认 1–3 秒；最小值不能大于最大值，范围 0–3600 秒。"
+                "此延迟同时用于位置签到和签到码自动提交，手动提交不延迟。"
+            ).classes("muted text-xs")
             ui.separator()
             ui.label("签到照片").classes("section-title")
             image_box = ui.row().classes("w-full")
@@ -197,6 +218,10 @@ class SettingsView:
 
             ui.separator()
             ui.label("签到码生成").classes("section-title")
+            ui.label(
+                "启用日期时间模板即同时启用签到码自动提交：收到学习通课程签到码消息后，"
+                "服务端等待随机延迟，再生成签到码并提交。"
+            ).classes("text-sm")
             generator = settings.get("signCodeGenerator") or {}
             mode = (
                 ui.select(
@@ -234,7 +259,10 @@ class SettingsView:
             update_preview()
             with ui.expansion("使用方法", icon="help_outline", value=True).classes("w-full"):
                 ui.label("1. 选择“日期时间模板”，填写模板和时区，然后保存设置。").classes("text-sm")
-                ui.label("2. 在“签到码签到”窗口点击“生成签到码”，检查或修改后再提交。").classes("text-sm")
+                ui.label(
+                    "2. 后端运行且学习通消息连接正常时，新收到的课程签到码消息会按随机延迟自动提交，关闭网页仍有效。"
+                ).classes("text-sm")
+                ui.label("3. 也可打开“签到码签到”窗口，点击“生成签到码”，检查或修改后手动提交。").classes("text-sm")
                 ui.label("支持占位符（区分大小写，均补零）：").classes("text-sm")
                 ui.label(
                     "{YYYY} 四位年份；{YY} 两位年份；{MM} 月份；{DD} 日期；{HH} 小时（24 小时制）；{mm} 分钟。"
@@ -247,8 +275,14 @@ class SettingsView:
                     "时区默认 Asia/Shanghai（北京时间），也可填 UTC 等 IANA 时区。"
                 ).classes("muted text-xs")
                 ui.label(
-                    "以点击生成时的时间为准；预览不会自动填入或提交签到码。生成结果仍需通过平台校验。"
+                    "手动生成以点击时的时间为准，自动生成以延迟结束后的时间为准；预览不会触发提交。生成结果仍需通过平台校验。"
                     "同一平台、服务器、课程及班级下的账号共用此设置。"
+                ).classes("muted text-xs")
+                ui.label(
+                    "自动提交仅处理 5 分钟内的学习通课程新消息；群聊签到、雨课堂和历史消息不自动提交。"
+                    "每个账号、课程及活动只自动尝试一次，失败不自动重试，结果请查看“操作记录”。"
+                    "需要验证码或人脸校验、缺少必需信息时请手动处理；需要照片时使用课程中第一张照片。"
+                    "关闭对应开关或生成方式可停止尚未发出的提交，已发出的请求请在平台核对结果。"
                 ).classes("muted text-xs")
 
             def save():
@@ -261,6 +295,8 @@ class SettingsView:
                             "location": location(),
                             "imageObjectIds": images,
                             "signCodeGenerator": generator_config(),
+                            "autoLocationSign": auto_location.value,
+                            "signDelay": {"min": delay_min.value, "max": delay_max.value},
                         },
                     )
                     dialog.close()

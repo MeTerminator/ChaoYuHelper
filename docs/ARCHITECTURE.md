@@ -11,12 +11,16 @@ main.py                         组装应用、注册服务生命周期
   └─ app/ui/routes.py           NiceGUI 页面路由
        └─ app/ui/dashboard.py   页面状态、业务视图组合、导航与清理
 
-入口 → service / im_service → providers → HTTP / WebSocket
+入口 → service / im_service / auto_sign → providers → HTTP / WebSocket
 界面 / providers → activity / homework / im → 纯解析与数据归一化
 service / providers / 媒体服务 → store / crypto / media
 ```
 
 界面与 API 不直接构造平台 HTTP 请求。平台协议和解析模块不依赖界面或应用路由。`ProviderError` 是共享的平台错误类型，定义在 `providers/base.py`；纯解析模块可以使用它，但不创建客户端或访问数据库。
+
+`auto_sign.py` 接收 `im_service` 分发的学习通实时课程签到消息，负责随机延迟、重读设置、账号锁、
+持久化去重及自动提交记录；历史缓存与预取入口不调度自动签到。`sign_code.py` 只负责日期模板校验与替换。
+自动签到任务独立于浏览器页面，由 `Service` 管理生命周期；手动签到经 `Service.submit_sign` 与自动任务协调，防止重复提交。
 
 ## 浏览器界面：`app/ui/`
 

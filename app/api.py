@@ -167,7 +167,7 @@ async def perform(action: str, body: ActionRequest):
 
     async def operation(provider):
         if action == "sign" and provider.platform == "chaoxing":
-            return await provider.sign(body.course, body.active["id"], **body.values)
+            return await service.submit_sign(provider, body.course, body.active["id"], **body.values)
         if action == "questions" and provider.platform == "chaoxing":
             return await provider.submit_questions(
                 body.course, body.active, body.values["questions"], body.values["answers"]

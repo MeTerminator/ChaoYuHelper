@@ -1,4 +1,4 @@
-"""Local manual-operation history."""
+"""Local manual and automatic operation history."""
 
 from datetime import datetime
 
@@ -9,7 +9,7 @@ from ..service import service
 
 class HistoryView:
     def render_history(self):
-        self.heading("ACTIVITY LOG", "操作记录", "查看手动提交的逐账号结果。记录保存在后端服务中。")
+        self.heading("ACTIVITY LOG", "操作记录", "查看手动与自动提交的逐账号结果。记录保存在后端服务中。")
         rows = list(service.store.all("history").values())[-200:][::-1]
         if not rows:
             self.empty("history", "还没有操作记录", "完成签到、答题或其他提交后，结果会显示在这里。")
@@ -19,5 +19,7 @@ class HistoryView:
                     "text-teal-700" if row["ok"] else "text-red-600"
                 )
                 ui.label(row["account"]).classes("font-semibold")
+                if row.get("source") == "auto-sign":
+                    ui.label(row["action"]).classes("text-sm")
                 ui.label("操作成功" if row["ok"] else row.get("error", "")).classes("grow text-sm")
                 ui.label(datetime.fromtimestamp(row["time"]).strftime("%m-%d %H:%M:%S")).classes("muted text-xs")

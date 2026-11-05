@@ -45,6 +45,9 @@ class SignView:
                     ui.label(f"日期模板：{generator.get('template', '')} · {generator.get('timezone', '')}").classes(
                         "muted text-xs"
                     )
+                    ui.label("已启用服务端签到码自动提交；新消息将按课程设置的随机延迟处理，结果见操作记录。").classes(
+                        "muted text-xs"
+                    )
                 else:
                     ui.label("可在课程设置 → 签到码生成中启用日期时间模板。").classes("muted text-xs")
                 generated_at = ui.label().classes("muted text-xs")
@@ -217,7 +220,9 @@ class SignView:
                     if kind.value == "0" and info.get("ifPhoto", info.get("ifphoto")) == 1 and not params["object_id"]:
                         raise ProviderError("本次签到需要照片，请先上传或选择照片")
                     try:
-                        return await provider.sign(course, active["id"], kind.value, **params, validate=validation)
+                        return await service.submit_sign(
+                            provider, course, active["id"], kind.value, **params, validate=validation
+                        )
                     except ProviderError as exc:
                         message = str(exc)
                         if message.startswith("validate"):
@@ -225,7 +230,8 @@ class SignView:
                                 validation = await self.slide_captcha(provider, active.get("url", ""))
                             if not validation:
                                 raise ProviderError("已取消验证码验证")
-                            return await provider.sign(
+                            return await service.submit_sign(
+                                provider,
                                 course,
                                 active["id"],
                                 kind.value,

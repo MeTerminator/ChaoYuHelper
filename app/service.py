@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from .auto_sign import AutoSign, validate_delay
 from .im_media import IMImages
 from .im_service import MessageService
 from .providers.base import ProviderError
@@ -18,6 +19,7 @@ class Service:
         self.store = store or Store(DATA_DIR)
         self.providers = {}
         self.locks = {}
+        self.auto_sign = AutoSign(self)
         self.im = MessageService(self)
         self.im_images = IMImages(self)
 
@@ -70,6 +72,9 @@ class Service:
         return self.store.get("settings", self.setting_key(account_id, course), {})
 
     def save_settings(self, account_id, course, value):
+        if not isinstance(value.get("autoLocationSign", False), bool):
+            raise ProviderError("位置签到自动提交开关需要为布尔值")
+        value = {**value, "signDelay": validate_delay(value.get("signDelay", {}))}
         if "signCodeGenerator" in value:
             value = {**value, "signCodeGenerator": validate_generator(value["signCodeGenerator"])}
         location = value.get("location")
@@ -80,6 +85,8 @@ class Service:
                 raise ProviderError("请填写有效地址与经纬度") from exc
             if not location.get("address") or not -90 <= lat <= 90 or not -180 <= lng <= 180:
                 raise ProviderError("请填写有效地址与经纬度")
+        if value.get("autoLocationSign") and not location:
+            raise ProviderError("启用位置签到自动提交前，请先填写完整位置")
         self.store.put("settings", self.setting_key(account_id, course), value)
 
     async def courses(self, account_id, refresh=True):
@@ -88,6 +95,16 @@ class Service:
             return self.store.get("courses", account_id, [])
         result = await self.provider(account_id).courses()
         self.store.put("courses", account_id, result)
+        return result
+
+    async def submit_sign(self, provider, course, active_id, *args, **kwargs):
+        account_id = provider.account["id"]
+        key = self.auto_sign.key(account_id, course, active_id)
+        if self.store.get("auto-sign", key, {}).get("status") == "success":
+            return {"success": True, "message": "本次签到已自动提交成功"}
+        result = await provider.sign(course, active_id, *args, **kwargs)
+        if result is not None and result is not False:
+            self.auto_sign.manual_success(account_id, course, active_id)
         return result
 
     async def batch(self, account_ids, operation):
@@ -111,9 +128,11 @@ class Service:
         return await asyncio.gather(*(one(i) for i in dict.fromkeys(account_ids)))
 
     async def start(self):
+        self.auto_sign.closing = False
         await self.im.start()
 
     async def close(self):
+        await self.auto_sign.close()
         await self.im.close()
         await self.im_images.close()
         await asyncio.gather(*(p.close() for p in self.providers.values()))
