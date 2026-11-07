@@ -15,6 +15,7 @@ from .classroom import ClassroomView
 from .components import primary
 from .constants import PLATFORMS, SERVERS
 from .courses import CoursesView
+from .exams import ExamsView
 from .history import HistoryView
 from .homework import HomeworkView
 from .im_conversations import ConversationsView
@@ -32,6 +33,7 @@ class Dashboard(
     SettingsView,
     HomeworkView,
     MyHomeworkView,
+    ExamsView,
     SignView,
     ActivitiesView,
     CaptureView,
@@ -48,7 +50,9 @@ class Dashboard(
         self.account_id = app.storage.user.get("account_id", "")
         self.course = None
         self.section = (
-            section if section in ("courses", "homework", "accounts", "groups", "history", "settings") else "courses"
+            section
+            if section in ("courses", "homework", "exams", "accounts", "groups", "history", "settings")
+            else "courses"
         )
         self.settings_error = settings_error
         self.query = ""
@@ -117,6 +121,7 @@ class Dashboard(
             for key, title, icon in [
                 ("courses", "我的课程", "grid_view"),
                 ("homework", "我的作业", "assignment"),
+                ("exams", "我的考试", "quiz"),
                 ("accounts", "账号管理", "manage_accounts"),
                 ("groups", "群聊与消息", "forum"),
                 ("history", "操作记录", "history"),
@@ -216,7 +221,7 @@ class Dashboard(
         self.im_selected = None
         self.im_status = "未连接"
         self.account_id, self.course = value or "", None
-        if self.section != "homework":
+        if self.section not in ("homework", "exams"):
             self.section = "courses"
         app.storage.user["account_id"] = self.account_id
         if self.client.request.url.path.startswith("/homework"):
@@ -234,6 +239,7 @@ class Dashboard(
         titles = {
             "courses": "我的课程",
             "homework": "我的作业",
+            "exams": "我的考试",
             "accounts": "账号管理",
             "groups": "群聊与消息",
             "history": "操作记录",
@@ -252,6 +258,8 @@ class Dashboard(
                 self.render_courses()
             elif self.section == "homework":
                 self.render_my_homework()
+            elif self.section == "exams":
+                self.render_exams()
             elif self.section == "accounts":
                 self.render_accounts()
             elif self.section == "groups":

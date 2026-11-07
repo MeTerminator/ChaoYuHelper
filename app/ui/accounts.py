@@ -81,6 +81,7 @@ class AccountsView:
 
             async def finish(account):
                 if account:
+                    await service.exams.remove(account["id"])
                     await service.im.remove(account["id"])
                     await service.im_images.remove(account["id"])
                     existing = service.providers.pop(account["id"], None)

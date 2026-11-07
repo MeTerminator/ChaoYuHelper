@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from .auto_sign import AutoSign, validate_delay
+from .exams import Exams
 from .im_media import IMImages
 from .im_service import MessageService
 from .providers.base import ProviderError
@@ -23,6 +24,7 @@ class Service:
         self.auto_sign = AutoSign(self)
         self.im = MessageService(self)
         self.im_images = IMImages(self)
+        self.exams = Exams(self)
 
     def new_login(self, platform, server="yuketang"):
         return (Chaoxing if platform == "chaoxing" else Rain)(self.store, server=server)
@@ -54,6 +56,8 @@ class Service:
         }
 
     async def delete_account(self, account_id):
+        await self.exams.remove(account_id)
+        self.store.delete("exam-images", account_id)
         self.store.delete("accounts", account_id)
         await self.im.remove(account_id)
         await self.im_images.remove(account_id)
@@ -134,6 +138,7 @@ class Service:
         await self.im.start()
 
     async def close(self):
+        await self.exams.close()
         await self.auto_sign.close()
         await self.im.close()
         await self.im_images.close()

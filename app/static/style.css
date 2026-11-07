@@ -161,3 +161,6 @@ html:has(body.body--dark){color-scheme:dark}
 html:has(body.body--light),body.body--light{color-scheme:light}
 @media(prefers-color-scheme:dark){:root{color-scheme:dark}}
 body.body--dark .course-art:after{border-color:#ffffff12}
+
+.exam-webview{width:480px;max-width:100%;flex-shrink:0}
+.exam-controls{min-width:260px;max-width:540px}
