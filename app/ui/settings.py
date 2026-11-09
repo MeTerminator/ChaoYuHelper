@@ -4,6 +4,7 @@ from html import escape
 
 from nicegui import ui
 
+from ..ai_client import get_ai_config, save_ai_config, test_ai_connection
 from ..auth import CSRF_COOKIE
 from ..providers.base import ProviderError
 from ..service import service
@@ -33,6 +34,36 @@ class SettingsView:
 <button type="submit">保存并重新登录</button></form>''',
                 sanitize=False,
             ).classes("w-full")
+        ai_cfg = get_ai_config(service.store)
+        with ui.column().classes("panel w-full max-w-xl gap-3"):
+            ui.label("AI API 设置").classes("section-title")
+            ui.label("配置 OpenAI 兼容的 API 接口，用于课堂互动自动答题。").classes("muted text-sm")
+            api_url = field("API 地址 (Base URL)", ai_cfg["base_url"])
+            model_id = field("模型 ID (Model ID)", ai_cfg["model"])
+            api_key = field("API KEY", ai_cfg["api_key"], password=True)
+            status_label = ui.label("").classes("text-xs")
+
+            async def test_conn():
+                cfg = {"base_url": api_url.value, "model": model_id.value, "api_key": api_key.value}
+                status_label.text = "正在测试连接..."
+                status_label.classes("text-xs text-blue-600", remove="text-red-600 text-teal-600")
+                try:
+                    res = await test_ai_connection(cfg)
+                    status_label.text = res
+                    status_label.classes("text-xs text-teal-600", remove="text-blue-600 text-red-600")
+                    ui.notify(res, type="positive")
+                except Exception as exc:
+                    status_label.text = str(exc)
+                    status_label.classes("text-xs text-red-600", remove="text-blue-600 text-teal-600")
+                    ui.notify(str(exc), type="negative")
+
+            def save_ai():
+                save_ai_config(service.store, api_url.value, model_id.value, api_key.value)
+                ui.notify("AI API 设置已保存", type="positive")
+
+            with ui.row().classes("w-full justify-between items-center"):
+                ui.button("测试连接", icon="network_check", on_click=lambda: guarded(test_conn)).props("outline dense")
+                primary("保存 AI 设置", save_ai, "save")
 
     def selected_accounts(self):
         return (

@@ -202,6 +202,7 @@ class MessageService:
         state.events.append((state.sequence, {"name": name, "message": message}))
         if name == "course-im-message":
             self.service.auto_sign.receive(account_id, message, state.user_id)
+            self.service.auto_answer.receive(account_id, message, state.user_id)
 
     def cache_message(self, account_id, message, user_id):
         store = self.service.store
@@ -376,6 +377,7 @@ class MessageService:
         if self.connections.get(account_id) is state:
             self.connections.pop(account_id, None)
         await self.service.auto_sign.remove(account_id)
+        await self.service.auto_answer.remove(account_id)
 
     async def close(self):
         self.closing = True

@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from .auto_answer import AutoAnswer
 from .auto_sign import AutoSign, validate_delay
 from .exams import Exams
 from .im_media import IMImages
@@ -22,6 +23,7 @@ class Service:
         self.locks = {}
         self.homework_locks = {}
         self.auto_sign = AutoSign(self)
+        self.auto_answer = AutoAnswer(self)
         self.im = MessageService(self)
         self.im_images = IMImages(self)
         self.exams = Exams(self)
@@ -81,6 +83,8 @@ class Service:
         if not isinstance(value.get("autoLocationSign", False), bool):
             raise ProviderError("位置签到自动提交开关需要为布尔值")
         value = {**value, "signDelay": validate_delay(value.get("signDelay", {}))}
+        if "aiAnswerDelay" in value:
+            value = {**value, "aiAnswerDelay": validate_delay(value["aiAnswerDelay"])}
         if "signCodeGenerator" in value:
             value = {**value, "signCodeGenerator": validate_generator(value["signCodeGenerator"])}
         location = value.get("location")
@@ -135,11 +139,13 @@ class Service:
 
     async def start(self):
         self.auto_sign.closing = False
+        self.auto_answer.closing = False
         await self.im.start()
 
     async def close(self):
         await self.exams.close()
         await self.auto_sign.close()
+        await self.auto_answer.close()
         await self.im.close()
         await self.im_images.close()
         await asyncio.gather(*(p.close() for p in self.providers.values()))

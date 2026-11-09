@@ -11,6 +11,7 @@ from ..activity import (
     topic_id,
     validate_answers,
 )
+from ..ai_client import get_ai_config, solve_questions
 from ..providers.base import ProviderError
 from ..service import service
 from .components import field, guarded, options_for, primary, rich
@@ -91,8 +92,31 @@ class ActivitiesView:
                     elif not only_empty or not widget.value:
                         widget.value = value
 
-            if active["type"] == 42:
-                ui.button("填入平台参考答案", on_click=fill_reference, icon="auto_fix_high").props("outline")
+            async def ai_solve():
+                ai_config = get_ai_config(service.store)
+                if not ai_config.get("api_key"):
+                    ui.notify("未配置 AI API KEY，请先前往「系统设置」配置", type="warning")
+                    return
+                ui.notify("正在请求 AI 解题，请稍候...", type="info")
+                answers = await solve_questions(
+                    ai_config, questions, course_name=course.get("name", ""), active_name=active.get("name", "")
+                )
+                for qid, val in answers.items():
+                    widget = widgets.get(qid)
+                    if widget is None:
+                        continue
+                    if isinstance(widget, list):
+                        for w, v in zip(widget, val):
+                            w.value = str(v)
+                    else:
+                        widget.value = val
+                ui.notify("AI 作答已填入表单", type="positive")
+
+            with ui.row().classes("gap-2"):
+                if active["type"] == 42:
+                    ui.button("填入平台参考答案", on_click=fill_reference, icon="auto_fix_high").props("outline")
+                if active["type"] in (42, 43, 14):
+                    ui.button("AI 解答并填入", on_click=lambda: guarded(ai_solve), icon="psychology").props("outline")
             results = ui.column().classes("w-full")
 
             async def submit():
